@@ -4,26 +4,59 @@
  * Three modes:
  *   A) Tour Link  — paste Matterport / Kuula / any iframe URL
  *   B) 3D Model   — upload GLB / GLTF file
- *   C) AI 360°    — upload room photos → instant panorama preview
+ *   C) 360° View  — upload directional wall images (Wall 1–4, up to 8 angles)
+ *                   Browser stitches them into a 2:1 equirectangular panorama
+ *                   using Canvas 2D, then uploads the result as a single JPEG.
+ *
+ * Directional slot model (Mode C):
+ *   - 4 required cardinal slots: Wall 1 (Front / 0°), Wall 2 (Right / 90°),
+ *     Wall 3 (Back / 180°), Wall 4 (Left / 270°)
+ *   - Up to 4 optional extra angle slots (diagonal corners, ceiling, etc.)
+ *   - Images are stitched in angular order → seamless equirectangular panorama
  *
  * When propertyId is null (property not yet saved):
- *   • Tour data is kept in local state and applied on publish.
- *   • AI mode: first source-image blob URL is shown immediately as a
- *     360° preview using the PanoramaViewer — no server call needed.
+ *   - Panorama is stitched client-side and shown as immediate blob: preview.
+ *   - On publish the caller must re-call tourApi.generate360 with the blob.
  */
 
-import { useRef, useState } from "react";
+import { useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import {
   Link2, Upload, Sparkles, Check, Loader2, X, ImagePlus,
-  Globe, Box, RotateCcw, Eye,
+  Globe, Box, RotateCcw, Eye, Plus, ArrowUp, ArrowRight,
+  ArrowDown, ArrowLeft, Compass,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { tourApi } from "@/lib/api";
+import { stitchPanorama, type PanoramaSlot } from "@/lib/panorama-stitch";
 import { ThreeDViewer, type TourType } from "@/components/property/ThreeDViewer";
 
 const GOLD = "#C9921A";
-const MAX_AI_IMAGES = 20;
+
+// ─── Directional slot definitions ─────────────────────────────────────────────
+// Each slot maps to an angle (0°=front, 90°=right, 180°=back, 270°=left).
+// Slots 0–3 are required; slots 4–7 are optional extras.
+const WALL_SLOTS = [
+  { id: 0, label: "Wall 1",  sub: "Front",  angle: 0,   Icon: ArrowUp,    required: true  },
+  { id: 1, label: "Wall 2",  sub: "Right",  angle: 90,  Icon: ArrowRight, required: true  },
+  { id: 2, label: "Wall 3",  sub: "Back",   angle: 180, Icon: ArrowDown,  required: true  },
+  { id: 3, label: "Wall 4",  sub: "Left",   angle: 270, Icon: ArrowLeft,  required: true  },
+  { id: 4, label: "Angle 5", sub: "Front-Right", angle: 45,  Icon: Compass, required: false },
+  { id: 5, label: "Angle 6", sub: "Back-Right",  angle: 135, Icon: Compass, required: false },
+  { id: 6, label: "Angle 7", sub: "Back-Left",   angle: 225, Icon: Compass, required: false },
+  { id: 7, label: "Angle 8", sub: "Front-Left",  angle: 315, Icon: Compass, required: false },
+] as const;
+
+const MIN_WALLS = 4;  // minimum required slots
+const MAX_WALLS = 8;  // maximum slots shown
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface WallSlot {
+  slotId: number;
+  file:       File;
+  previewUrl: string;
+  angle:      number;
+}
 
 interface SrcImage { file: File; previewUrl: string; }
 
@@ -34,6 +67,10 @@ export interface TourFormState {
   tourModelUrl: string;
   tourPanoramaUrl: string;
   aiSourceFiles: File[];
+  /** The pre-stitched panorama Blob from the browser canvas.
+   *  Stored here so the publish handler can send it to the server
+   *  without re-stitching.  null for non-ai tour types. */
+  panoramaBlob: Blob | null;
 }
 
 export interface AI360GeneratorProps {
@@ -46,6 +83,32 @@ export interface AI360GeneratorProps {
   onLocalChange?: (state: TourFormState) => void;
 }
 
+// stitchPanorama is imported from @/lib/panorama-stitch (shared with detail page)
+
+// ─── Validation ───────────────────────────────────────────────────────────────
+function validateSlots(slots: (WallSlot | null)[], visibleCount: number): string | null {
+  for (let i = 0; i < Math.min(visibleCount, MIN_WALLS); i++) {
+    if (!slots[i]) return `Wall ${i + 1} image is required`;
+  }
+  const filled = slots.filter(Boolean) as WallSlot[];
+  if (filled.length < MIN_WALLS) return `Upload at least ${MIN_WALLS} wall images`;
+
+  // Check for obvious duplicates (same file name + size)
+  const seen = new Set<string>();
+  for (const s of filled) {
+    const key = `${s.file.name}:${s.file.size}`;
+    if (seen.has(key)) return `Duplicate image detected (${s.file.name})`;
+    seen.add(key);
+  }
+  // Resolution sanity — skip files too small
+  // (actual pixel check happens after Image load in stitchPanorama)
+  for (const s of filled) {
+    if (s.file.size < 5 * 1024) return `${s.file.name} is too small to be a valid photo`;
+  }
+  return null;
+}
+
+// =============================================================================
 export function AI360Generator({
   propertyId,
   initialTourType  = "none",
@@ -58,14 +121,14 @@ export function AI360Generator({
 
   // ── Active mode tab ───────────────────────────────────────────────────────
   const [mode, setMode] = useState<"link" | "model" | "ai">(
-    initialTourType === "link"          ? "link"
-    : initialTourType === "model"       ? "model"
-    : initialTourType === "ai_generated"? "ai"
+    initialTourType === "link"           ? "link"
+    : initialTourType === "model"        ? "model"
+    : initialTourType === "ai_generated" ? "ai"
     : "link"
   );
 
   // ── Link state ────────────────────────────────────────────────────────────
-  const [tourUrl,   setTourUrl]   = useState(initialTourUrl  ?? "");
+  const [tourUrl,   setTourUrl]   = useState(initialTourUrl ?? "");
   const [linkSaved, setLinkSaved] = useState(!!initialTourUrl);
 
   // ── Model state ───────────────────────────────────────────────────────────
@@ -74,14 +137,17 @@ export function AI360Generator({
   const [modelUploading, setModelUploading] = useState(false);
   const modelInputRef = useRef<HTMLInputElement>(null);
 
-  // ── AI state ──────────────────────────────────────────────────────────────
-  const [srcImages,  setSrcImages]  = useState<SrcImage[]>([]);
-  const [generating, setGenerating] = useState(false);
-  const aiInputRef = useRef<HTMLInputElement>(null);
+  // ── Mode C: directional wall slots ───────────────────────────────────────
+  // wallSlots[i] = WallSlot for WALL_SLOTS[i], or null if not uploaded yet
+  const [wallSlots,    setWallSlots]    = useState<(WallSlot | null)[]>(Array(MAX_WALLS).fill(null));
+  const [visibleWalls, setVisibleWalls] = useState(MIN_WALLS); // how many slots shown
+  const [generating,   setGenerating]   = useState(false);
+  const [stitchProgress, setStitchProgress] = useState<string>("");
 
-  // ── SINGLE preview state — directly controlled, NOT derived ──────────────
-  // previewUrl: the URL to pass to ThreeDViewer (blob: or https:)
-  // previewType: which ThreeDViewer renderer to use
+  // Per-slot hidden file inputs
+  const wallInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // ── Preview state ─────────────────────────────────────────────────────────
   const [previewUrl,  setPreviewUrl]  = useState<string>(initialPanoUrl ?? "");
   const [previewType, setPreviewType] = useState<TourType>(
     initialTourType !== "none" ? initialTourType : "none"
@@ -113,7 +179,7 @@ export function AI360Generator({
     setShowPreview(true);
     const state: TourFormState = {
       tourType: "link", tourUrl: url, modelFile: null,
-      tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [],
+      tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [], panoramaBlob: null,
     };
     onSaved?.(state);
     notify(state);
@@ -132,7 +198,7 @@ export function AI360Generator({
     setModelFile(f);
     setModelUrl("");
     setPreviewUrl(""); setPreviewType("none"); setShowPreview(false);
-    notify({ tourType: "none", tourUrl: "", modelFile: f, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [] });
+    notify({ tourType: "none", tourUrl: "", modelFile: f, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [], panoramaBlob: null });
   };
 
   const handleUploadModel = async () => {
@@ -147,7 +213,7 @@ export function AI360Generator({
         setShowPreview(true);
         const state: TourFormState = {
           tourType: "model", tourUrl: "", modelFile,
-          tourModelUrl: res.tour_model_url, tourPanoramaUrl: "", aiSourceFiles: [],
+          tourModelUrl: res.tour_model_url, tourPanoramaUrl: "", aiSourceFiles: [], panoramaBlob: null,
         };
         onSaved?.(state); notify(state);
         toast.success("3D model uploaded!");
@@ -156,78 +222,151 @@ export function AI360Generator({
     } else {
       setModelUrl("pending");
       setPreviewUrl(""); setPreviewType("none"); setShowPreview(false);
-      notify({ tourType: "model", tourUrl: "", modelFile, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [] });
+      notify({ tourType: "model", tourUrl: "", modelFile, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [], panoramaBlob: null });
       toast.success("Model selected — will be uploaded when you publish");
     }
   };
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Mode C — AI 360° generation
+  // Mode C — Directional wall image upload
   // ─────────────────────────────────────────────────────────────────────────
-  const handleAiImages = (fileList: FileList | null) => {
-    if (!fileList) return;
+
+  const handleWallFileSelect = useCallback((slotIndex: number, file: File) => {
     const valid = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-    const remaining = MAX_AI_IMAGES - srcImages.length;
-    if (remaining <= 0) { toast.warning(`Max ${MAX_AI_IMAGES} images`); return; }
-    const toAdd: SrcImage[] = [];
-    for (const f of Array.from(fileList).slice(0, remaining)) {
-      if (!valid.includes(f.type)) { toast.error(`${f.name}: unsupported format`); continue; }
-      if (f.size > 15 * 1024 * 1024) { toast.error(`${f.name}: exceeds 15 MB`); continue; }
-      toAdd.push({ file: f, previewUrl: URL.createObjectURL(f) });
+    if (!valid.includes(file.type)) {
+      toast.error(`${file.name}: only JPG, PNG, or WEBP allowed`);
+      return;
     }
-    if (fileList.length > remaining) toast.info(`Only ${remaining} more image${remaining !== 1 ? "s" : ""} added`);
-    setSrcImages(prev => {
-      const next = [...prev, ...toAdd];
-      notify({ tourType: "ai_generated", tourUrl: "", modelFile: null, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: next.map(i => i.file) });
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error(`${file.name}: file exceeds 15 MB limit`);
+      return;
+    }
+    if (file.size < 5 * 1024) {
+      toast.error(`${file.name}: file is too small to be a valid photo`);
+      return;
+    }
+
+    const slot = WALL_SLOTS[slotIndex];
+    const previewUrl = URL.createObjectURL(file);
+
+    setWallSlots(prev => {
+      const next = [...prev];
+      // Revoke previous blob URL for this slot if any
+      if (next[slotIndex]?.previewUrl) {
+        URL.revokeObjectURL(next[slotIndex]!.previewUrl);
+      }
+      next[slotIndex] = { slotId: slotIndex, file, previewUrl, angle: slot.angle };
       return next;
     });
-  };
+    // Clear any existing panorama preview when slots change
+    setPreviewUrl("");
+    setPreviewType("none");
+    setShowPreview(false);
+  }, []);
 
-  const removeAiImage = (idx: number) => {
-    setSrcImages(prev => {
-      URL.revokeObjectURL(prev[idx].previewUrl);
-      const next = prev.filter((_, i) => i !== idx);
-      notify({ tourType: "ai_generated", tourUrl: "", modelFile: null, tourModelUrl: "", tourPanoramaUrl: previewUrl, aiSourceFiles: next.map(i => i.file) });
+  const handleWallInputChange = useCallback((slotIndex: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleWallFileSelect(slotIndex, file);
+    // Reset input so same file can be re-selected after removal
+    e.target.value = "";
+  }, [handleWallFileSelect]);
+
+  const removeWallSlot = useCallback((slotIndex: number) => {
+    setWallSlots(prev => {
+      const next = [...prev];
+      if (next[slotIndex]?.previewUrl) URL.revokeObjectURL(next[slotIndex]!.previewUrl);
+      next[slotIndex] = null;
       return next;
     });
+    setPreviewUrl("");
+    setPreviewType("none");
+    setShowPreview(false);
+  }, []);
+
+  const handleAddExtraAngle = () => {
+    setVisibleWalls(v => Math.min(MAX_WALLS, v + 1));
   };
 
+  // ── Drag-and-drop for wall slots ──────────────────────────────────────────
+  const handleWallDrop = useCallback((slotIndex: number, e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleWallFileSelect(slotIndex, file);
+  }, [handleWallFileSelect]);
+
+  // ── Stitch + generate panorama ─────────────────────────────────────────────
   const handleGenerate360 = async () => {
-    if (srcImages.length === 0) { toast.error("Upload at least 1 room photo"); return; }
+    const filled = wallSlots.slice(0, visibleWalls).filter(Boolean) as WallSlot[];
+
+    const validationError = validateSlots(wallSlots, visibleWalls);
+    if (validationError) { toast.error(validationError); return; }
+
     setGenerating(true);
+    setStitchProgress("Preparing images…");
+
     try {
+      // Step 1: stitch in browser
+      setStitchProgress("Stitching panorama…");
+      const panoramaBlob = await stitchPanorama(filled);
+
+      // Step 2: convert blob → base64 data URL.
+      // pannellum uses XMLHttpRequest internally which CANNOT load blob: URLs
+      // (cross-origin restriction). A data: URL has no origin and works fine.
+      setStitchProgress("Preparing preview…");
+      const localDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("FileReader failed"));
+        reader.readAsDataURL(panoramaBlob);
+      });
+
+      setPreviewUrl(localDataUrl);
+      setPreviewType("ai_generated");
+      setShowPreview(true);
+
+      const sourceFiles = filled.sort((a, b) => a.angle - b.angle).map(s => s.file);
+      const directions  = filled.sort((a, b) => a.angle - b.angle).map(s => ({
+        slot:  s.slotId,
+        label: WALL_SLOTS[s.slotId].label,
+        angle: s.angle,
+      }));
+
       if (propertyId) {
-        // Property exists → call server
-        const res = await tourApi.generate360(propertyId, srcImages.map(i => i.file));
-        const url = res.tour_ai_panorama_url;
-        // Set preview BEFORE state so render gets it immediately
-        setPreviewUrl(url);
-        setPreviewType("ai_generated");
-        setShowPreview(true);
+        // Step 3a: upload pre-stitched panorama to server
+        setStitchProgress("Uploading panorama…");
+        const panoramaFile = new File([panoramaBlob], `panorama-${propertyId}.jpg`, { type: "image/jpeg" });
+        const res = await tourApi.generate360(propertyId, sourceFiles, panoramaFile, directions);
+        const serverUrl = res.tour_ai_panorama_url;
+
+        // Swap preview to the server-hosted URL once available
+        setPreviewUrl(serverUrl);
+
         const state: TourFormState = {
           tourType: "ai_generated", tourUrl: "", modelFile: null,
-          tourModelUrl: "", tourPanoramaUrl: url, aiSourceFiles: srcImages.map(i => i.file),
+          tourModelUrl: "", tourPanoramaUrl: serverUrl, aiSourceFiles: sourceFiles,
+          panoramaBlob: null, // already uploaded — server URL stored
         };
         onSaved?.(state); notify(state);
-        toast.success("✨ AI 360° view generated!");
+        toast.success("✨ 360° panorama created and saved!");
       } else {
-        // No property yet → use first image blob as immediate local preview
-        const blobUrl = srcImages[0].previewUrl;
-        // Set all three together so the very next render shows the preview
-        setPreviewUrl(blobUrl);
-        setPreviewType("ai_generated");
-        setShowPreview(true);
+        // Step 3b: no property yet — keep data URL + blob, notify parent
+        // panoramaBlob is kept so the publish handler can upload it to server
         notify({
           tourType: "ai_generated", tourUrl: "", modelFile: null,
-          tourModelUrl: "", tourPanoramaUrl: blobUrl,
-          aiSourceFiles: srcImages.map(i => i.file),
+          tourModelUrl: "", tourPanoramaUrl: localDataUrl,
+          aiSourceFiles: sourceFiles,
+          panoramaBlob: panoramaBlob,   // ← the real stitched JPEG blob
         });
-        toast.success("✨ 360° preview ready! Full panorama generated on publish.");
+        toast.success("✨ 360° preview ready! Full panorama saved on publish.");
       }
     } catch (e: any) {
-      toast.error(e.message ?? "Generation failed");
+      toast.error(e.message ?? "Panorama generation failed — please retry");
+      setPreviewUrl("");
+      setPreviewType("none");
+      setShowPreview(false);
     } finally {
       setGenerating(false);
+      setStitchProgress("");
     }
   };
 
@@ -237,18 +376,24 @@ export function AI360Generator({
   const reset = () => {
     setTourUrl(""); setLinkSaved(false);
     setModelFile(null); setModelUrl("");
-    setSrcImages(prev => { prev.forEach(i => URL.revokeObjectURL(i.previewUrl)); return []; });
+    setWallSlots(prev => {
+      prev.forEach(s => { if (s?.previewUrl) URL.revokeObjectURL(s.previewUrl); });
+      return Array(MAX_WALLS).fill(null);
+    });
+    setVisibleWalls(MIN_WALLS);
     setPreviewUrl(""); setPreviewType("none"); setShowPreview(false);
-    notify({ tourType: "none", tourUrl: "", modelFile: null, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [] });
+    notify({ tourType: "none", tourUrl: "", modelFile: null, tourModelUrl: "", tourPanoramaUrl: "", aiSourceFiles: [], panoramaBlob: null });
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Derived helpers for status badges
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Derived state ──────────────────────────────────────────────────────────
   const hasTour =
     (mode === "link"  && linkSaved) ||
     (mode === "model" && !!modelUrl) ||
     (mode === "ai"    && !!previewUrl);
+
+  const filledWalls = wallSlots.slice(0, visibleWalls).filter(Boolean).length;
+  const requiredFilled = wallSlots.slice(0, MIN_WALLS).filter(Boolean).length;
+  const canGenerate = requiredFilled >= MIN_WALLS;
 
   // ═══════════════════════════════════════════════════════════════════════════
   return (
@@ -259,10 +404,10 @@ export function AI360Generator({
         {([
           { key: "link",  Icon: Globe,     label: "Tour Link",    sub: "Matterport · Kuula" },
           { key: "model", Icon: Box,       label: "3D Model",     sub: "GLB / GLTF file"    },
-          { key: "ai",    Icon: Sparkles,  label: "AI Generate",  sub: "From your photos"   },
+          { key: "ai",    Icon: Sparkles,  label: "360° View",    sub: "Wall-by-wall photos" },
         ] as const).map(({ key, Icon, label, sub }) => (
           <button key={key} type="button"
-            onClick={() => { setMode(key); }}
+            onClick={() => setMode(key)}
             className={cn(
               "flex flex-col items-center gap-1.5 rounded-2xl border-2 px-3 py-3.5 text-center transition-all cursor-pointer",
               mode === key
@@ -370,81 +515,212 @@ export function AI360Generator({
         </div>
       )}
 
-      {/* ── Mode C: AI 360° ───────────────────────────────────────────────── */}
+      {/* ── Mode C: 360° View — directional wall upload ───────────────────── */}
       {mode === "ai" && (
         <div className="space-y-4 rounded-2xl border border-[#e8d9c0] bg-white p-4 sm:p-5">
+
+          {/* Header */}
           <div>
-            <p className="text-sm font-bold" style={{ color: "#1a1209" }}>AI-Generated 360° View</p>
+            <p className="text-sm font-bold" style={{ color: "#1a1209" }}>360° Property View</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Upload room photos — AI stitches them into an interactive 360° panorama.
+              Upload one photo per wall direction — we stitch them into an interactive 360° panorama.
             </p>
           </div>
 
-          {/* Drop zone */}
-          <button type="button" onClick={() => aiInputRef.current?.click()}
-            className="w-full rounded-2xl border-2 border-dashed border-[#e8d9c0] bg-[#fafaf8] px-4 py-6 text-center transition cursor-pointer hover:border-[#C9921A]/60 hover:bg-[#fef8eb]/40">
-            <div className="flex flex-col items-center gap-1.5">
-              <ImagePlus className="h-7 w-7 text-muted-foreground" />
-              <p className="text-sm font-semibold text-[#1a1209]">Add room photos ({srcImages.length}/{MAX_AI_IMAGES})</p>
-              <p className="text-xs text-muted-foreground">JPG · PNG · WEBP · up to 15 MB each</p>
+          {/* Room layout diagram */}
+          <div className="flex items-center justify-center py-1">
+            <div className="relative w-48 h-36">
+              {/* Room box */}
+              <div className="absolute inset-8 border-2 rounded-lg flex items-center justify-center"
+                style={{ borderColor: "#C9921A", backgroundColor: "#fef8eb" }}>
+                <span className="text-[10px] font-bold text-center leading-tight" style={{ color: "#836737" }}>
+                  360°<br/>VIEW
+                </span>
+              </div>
+              {/* Direction labels */}
+              <span className="absolute top-0 left-1/2 -translate-x-1/2 text-[10px] font-bold" style={{ color: "#1a1209" }}>
+                WALL 1 · FRONT
+              </span>
+              <span className="absolute right-0 top-1/2 -translate-y-1/2 text-[10px] font-bold" style={{ color: "#1a1209" }}>
+                WALL 2
+              </span>
+              <span className="absolute bottom-0 left-1/2 -translate-x-1/2 text-[10px] font-bold" style={{ color: "#1a1209" }}>
+                WALL 3 · BACK
+              </span>
+              <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[10px] font-bold" style={{ color: "#1a1209" }}>
+                WALL 4
+              </span>
             </div>
-          </button>
-          <input ref={aiInputRef} type="file" accept="image/jpeg,image/png,image/webp"
-            multiple className="hidden" onChange={e => handleAiImages(e.target.files)} />
+          </div>
 
-          {/* Thumbnails */}
-          {srcImages.length > 0 && (
-            <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
-              {srcImages.map((img, i) => (
-                <div key={i} className="relative group aspect-square rounded-xl overflow-hidden border border-[#e8d9c0]">
-                  <img src={img.previewUrl} alt={`Room ${i + 1}`} className="w-full h-full object-cover" />
-                  <button type="button" onClick={() => removeAiImage(i)}
-                    className="absolute top-1 right-1 hidden group-hover:flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white">
-                    <X className="h-3 w-3" />
-                  </button>
-                  <div className="absolute bottom-0 left-0 right-0 bg-black/40 text-white text-[9px] text-center py-0.5 font-medium">
-                    Room {i + 1}
+          {/* Wall slots */}
+          <div className="space-y-2.5">
+            {WALL_SLOTS.slice(0, visibleWalls).map((slotDef, i) => {
+              const slot = wallSlots[i];
+              const SlotIcon = slotDef.Icon;
+              const isFilled = !!slot;
+
+              return (
+                <div key={slotDef.id}
+                  className={cn(
+                    "relative flex items-center gap-3 rounded-2xl border-2 p-3 transition-all",
+                    isFilled
+                      ? "border-[#C9921A] bg-[#fef8eb]"
+                      : "border-[#e8d9c0] bg-[#fafaf8]"
+                  )}
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => handleWallDrop(i, e)}
+                >
+                  {/* Direction icon badge */}
+                  <div className="shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-xl border"
+                    style={{
+                      borderColor: isFilled ? "#C9921A" : "#e8d9c0",
+                      backgroundColor: isFilled ? "#fff8e7" : "#fff",
+                    }}>
+                    <SlotIcon className="h-4 w-4 mb-0.5" style={{ color: isFilled ? GOLD : "#a08858" }} />
+                    <span className="text-[9px] font-bold leading-none" style={{ color: isFilled ? "#836737" : "#a08858" }}>
+                      {slotDef.angle}°
+                    </span>
                   </div>
+
+                  {/* Label + status */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-bold" style={{ color: "#1a1209" }}>
+                        {slotDef.label}
+                      </span>
+                      {slotDef.required && (
+                        <span className="text-[9px] font-bold rounded-full px-1.5 py-0.5"
+                          style={{ backgroundColor: "#e8d9c0", color: "#836737" }}>
+                          required
+                        </span>
+                      )}
+                      {!slotDef.required && (
+                        <span className="text-[9px] font-medium rounded-full px-1.5 py-0.5"
+                          style={{ backgroundColor: "#f0fdf4", color: "#16a34a" }}>
+                          optional
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px]" style={{ color: "#836737" }}>
+                      {isFilled
+                        ? <span className="font-medium truncate block" style={{ color: "#1a1209" }}>{slot!.file.name}</span>
+                        : slotDef.sub
+                      }
+                    </span>
+                  </div>
+
+                  {/* Thumbnail (when filled) */}
+                  {isFilled && (
+                    <div className="shrink-0 w-14 h-14 rounded-xl overflow-hidden border"
+                      style={{ borderColor: "#C9921A" }}>
+                      <img src={slot!.previewUrl} alt={slotDef.label}
+                        className="w-full h-full object-cover" />
+                    </div>
+                  )}
+
+                  {/* Upload / Remove button */}
+                  {isFilled ? (
+                    <button type="button" onClick={() => removeWallSlot(i)}
+                      className="shrink-0 flex h-7 w-7 items-center justify-center rounded-full text-white transition hover:bg-red-500"
+                      style={{ backgroundColor: "rgba(0,0,0,0.25)" }}
+                      title="Remove image">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  ) : (
+                    <button type="button"
+                      onClick={() => wallInputRefs.current[i]?.click()}
+                      className="shrink-0 flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition"
+                      style={{
+                        borderColor: "#C9921A", color: GOLD,
+                        backgroundColor: "white",
+                      }}>
+                      <Upload className="h-3 w-3" />
+                      Upload
+                    </button>
+                  )}
+
+                  {/* Hidden file input for this slot */}
+                  <input
+                    ref={el => { wallInputRefs.current[i] = el; }}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={e => handleWallInputChange(i, e)}
+                  />
                 </div>
-              ))}
-              {srcImages.length < MAX_AI_IMAGES && (
-                <button type="button" onClick={() => aiInputRef.current?.click()}
-                  className="aspect-square rounded-xl border-2 border-dashed border-[#e8d9c0] flex items-center justify-center text-muted-foreground hover:border-[#C9921A] cursor-pointer">
-                  <ImagePlus className="h-5 w-5" />
-                </button>
-              )}
+              );
+            })}
+          </div>
+
+          {/* Add extra angle button */}
+          {visibleWalls < MAX_WALLS && (
+            <button type="button" onClick={handleAddExtraAngle}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed py-2.5 text-xs font-semibold transition"
+              style={{ borderColor: "#e8d9c0", color: "#836737" }}
+              onMouseOver={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = "#C9921A"; (e.currentTarget as HTMLButtonElement).style.color = GOLD; }}
+              onMouseOut={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = "#e8d9c0"; (e.currentTarget as HTMLButtonElement).style.color = "#836737"; }}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add another angle ({visibleWalls}/{MAX_WALLS})
+            </button>
+          )}
+
+          {/* Progress / status bar */}
+          {filledWalls > 0 && (
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2"
+              style={{ backgroundColor: "#faf6ee", border: "1px solid #e8d9c0" }}>
+              <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "#e8d9c0" }}>
+                <div className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${(requiredFilled / MIN_WALLS) * 100}%`,
+                    backgroundColor: requiredFilled >= MIN_WALLS ? "#16a34a" : GOLD,
+                  }} />
+              </div>
+              <span className="text-[11px] font-semibold shrink-0" style={{ color: "#836737" }}>
+                {requiredFilled}/{MIN_WALLS} required · {filledWalls} total
+              </span>
             </div>
           )}
 
           {/* Tips */}
-          <div className="rounded-xl bg-[#fef8eb] border border-[#f4deb4] p-3 text-xs space-y-1" style={{ color: "#836737" }}>
+          <div className="rounded-xl bg-[#fef8eb] border border-[#f4deb4] p-3 text-xs space-y-1"
+            style={{ color: "#836737" }}>
             <p className="font-bold text-[#1a1209]">📸 Tips for best results</p>
             <ul className="list-disc list-inside space-y-0.5">
-              <li>Upload photos from different angles of each room</li>
-              <li>Include Living Room, Bedroom, Kitchen &amp; Bathroom</li>
-              <li>Use natural daylight — avoid dark or blurry shots</li>
-              <li>4–12 photos gives the best panorama quality</li>
+              <li>Stand in the centre of the room and face each wall squarely</li>
+              <li>Use landscape orientation and include floor-to-ceiling in frame</li>
+              <li>Keep consistent lighting — avoid mixing day and flash shots</li>
+              <li>More angles (5–8) produce a smoother, more seamless panorama</li>
             </ul>
           </div>
 
           {/* Generate button */}
           <button type="button" onClick={handleGenerate360}
-            disabled={generating || srcImages.length === 0}
+            disabled={generating || !canGenerate}
             className="w-full flex items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-bold text-white transition disabled:opacity-60"
             style={{ backgroundColor: GOLD, boxShadow: "0 4px 14px rgba(201,146,26,0.30)" }}>
-            {generating
-              ? <><Loader2 className="h-4 w-4 animate-spin" /> Generating AI 360° View…</>
-              : <><Sparkles className="h-4 w-4" /> Generate AI 360° View</>}
+            {generating ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> {stitchProgress || "Creating 360° View…"}</>
+            ) : (
+              <><Sparkles className="h-4 w-4" /> Create 360° View</>
+            )}
           </button>
 
-          {/* Status after generation */}
+          {!canGenerate && filledWalls > 0 && filledWalls < MIN_WALLS && (
+            <p className="text-center text-xs" style={{ color: "#836737" }}>
+              Upload {MIN_WALLS - requiredFilled} more wall image{MIN_WALLS - requiredFilled !== 1 ? "s" : ""} to enable
+            </p>
+          )}
+
+          {/* Success status */}
           {previewUrl && mode === "ai" && (
             <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5">
               <Check className="h-4 w-4 text-emerald-600 shrink-0" />
               <p className="text-xs font-semibold text-emerald-700 flex-1">
                 {previewUrl.startsWith("blob:")
                   ? "✨ 360° preview ready below ↓ — full panorama saved on publish"
-                  : "✨ AI 360° view generated — preview below ↓"}
+                  : "✨ 360° panorama created — preview below ↓"}
               </p>
               <button type="button" onClick={() => setShowPreview(v => !v)}
                 className="flex items-center gap-1 text-[11px] font-bold text-emerald-700 hover:underline">
@@ -456,7 +732,7 @@ export function AI360Generator({
         </div>
       )}
 
-      {/* ── Live preview — driven by previewUrl + previewType directly ─────── */}
+      {/* ── Live preview ───────────────────────────────────────────────────── */}
       {previewUrl && previewType !== "none" && showPreview && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
@@ -472,8 +748,8 @@ export function AI360Generator({
           </div>
           <ThreeDViewer
             tourType={previewType}
-            tourUrl={previewType === "link"         ? previewUrl : undefined}
-            tourModelUrl={previewType === "model"   ? previewUrl : undefined}
+            tourUrl={previewType === "link"          ? previewUrl : undefined}
+            tourModelUrl={previewType === "model"    ? previewUrl : undefined}
             tourPanoramaUrl={previewType === "ai_generated" ? previewUrl : undefined}
             height="380px"
           />

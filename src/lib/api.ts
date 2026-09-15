@@ -979,10 +979,17 @@ export const aiApi = {
     property_type?: string;
     listing_type?: string;
     bedrooms?: number | string;
+    bathrooms?: number | string;
+    area_sqft?: number | string;
+    building_name?: string;
+    house_number?: string;
+    wing?: string;
+    landmark?: string;
     locality?: string;
     city?: string;
     furnished?: string;
     amenities?: string[];
+    [key: string]: unknown;
   }) =>
     req<{ description: string }>("/ai/generate-description", {
       method: "POST",
@@ -1045,13 +1052,39 @@ export const tourApi = {
     return res.json() as Promise<{ message: string; tour_type: string; tour_model_url: string }>;
   },
 
-  /** Generate AI 360° panorama from uploaded images (or existing property photos). */
-  generate360: async (propertyId: string, files?: File[]) => {
-    const token = getToken();
+  /**
+   * Generate / store a 360° panorama for a property.
+   *
+   * @param propertyId  - The property to attach the panorama to.
+   * @param sourceFiles - Raw directional wall images (sent as "images[]" for server logging).
+   * @param panoramaBlob- Pre-stitched 2:1 equirectangular JPEG from browser canvas.
+   *                      When provided the server skips server-side stitching and stores it directly.
+   * @param directions  - Optional metadata [{slot, label, angle}] for each source image.
+   */
+  generate360: async (
+    propertyId:   string,
+    sourceFiles?: File[],
+    panoramaBlob?: File | null,
+    directions?:  Array<{ slot: number; label: string; angle: number }> | null,
+  ) => {
+    const token    = getToken();
     const formData = new FormData();
-    if (files && files.length > 0) {
-      files.forEach(f => formData.append("images", f));
+
+    // Preferred: pre-stitched panorama from browser canvas
+    if (panoramaBlob) {
+      formData.append("panorama", panoramaBlob, panoramaBlob.name);
     }
+
+    // Source images — stored in Supabase for reference
+    if (sourceFiles && sourceFiles.length > 0) {
+      sourceFiles.forEach(f => formData.append("images", f));
+    }
+
+    // Direction metadata
+    if (directions && directions.length > 0) {
+      formData.append("directions", JSON.stringify(directions));
+    }
+
     const res = await fetch(`${API_BASE}/tour/generate-360/${propertyId}`, {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},

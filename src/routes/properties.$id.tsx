@@ -18,7 +18,7 @@ import { SimilarProperties } from "@/components/dashboard/SimilarProperties";
 import {
   properties as propertiesApi, inquiries as inquiriesApi, saved as savedApi,
   complaints as complaintsApi, visits as visitsApi, messages as messagesApi,
-  panoramaApi,
+  tourApi,
   type ApiProperty, type ApiReview, type VisitType,
 } from "@/lib/api";
 import { formatINR } from "@/lib/mock-properties";
@@ -34,6 +34,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/AuthContext";
 import { ThreeDViewer } from "@/components/property/ThreeDViewer";
+import { stitchPanorama } from "@/lib/panorama-stitch";
 import { recordPropertyView } from "@/lib/view-history";
 
 export const Route = createFileRoute("/properties/$id")({
@@ -98,9 +99,31 @@ const AMENITY_ICONS: Record<string, React.ReactNode> = {
  * works reliably on all devices (short links can fail on some mobile browsers).
  */
 
+export interface NearbyItem {
+  name: string;
+  distKm: number;
+  lat: number;
+  lng: number;
+  phone?: string;
+  website?: string;
+  opening_hours?: string;
+  address?: string;
+  categoryIcon?: string;
+  categoryLabel?: string;
+}
+
+export interface NearbyGroup {
+  label: string;
+  icon: string;
+  items: NearbyItem[];
+}
+
 interface MapSectionProps {
   property: ApiProperty;
   onCoordsResolved?: (coords: { lat: number; lng: number }) => void;
+  nearbyPOIs?: NearbyItem[];
+  activeCategory?: string;
+  focusedPOI?: NearbyItem | null;
 }
 
 // Validate GPS coords — reject null, NaN, and the (0,0) artifact
@@ -156,24 +179,156 @@ function getDetailLeaflet() {
   return detailLeafletPromise;
 }
 
-// Build a gold SVG pin (same style as the map search page)
-function buildDetailPin(): string {
-  return `<div style="width:32px;height:42px;filter:drop-shadow(0 3px 6px rgba(0,0,0,0.35))">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 36" width="32" height="42">
-      <path d="M14 0C8.477 0 4 4.477 4 10c0 7.5 10 26 10 26S24 17.5 24 10C24 4.477 19.523 0 14 0z"
-        fill="#C9921A" stroke="#b5800e" stroke-width="1.2"/>
-      <circle cx="14" cy="10" r="4.5" fill="white" opacity="0.9"/>
-    </svg>
-  </div>`;
+// Category-tailored SVG icons and color palettes for map markers
+function getCategorySvg(cat: string): { svg: string; color: string; bg: string; name: string } {
+  const c = (cat || "").toLowerCase();
+  if (c.includes("school") || c.includes("college") || c.includes("university") || c.includes("🏫")) {
+    return {
+      name: "Education",
+      color: "#2563eb",
+      bg: "#eff6ff",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>`,
+    };
+  }
+  if (c.includes("hospital") || c.includes("clinic") || c.includes("pharmacy") || c.includes("doctor") || c.includes("🏥")) {
+    return {
+      name: "Healthcare",
+      color: "#e11d48",
+      bg: "#fff1f2",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v12M6 12h12"/><rect width="18" height="18" x="3" y="3" rx="4"/></svg>`,
+    };
+  }
+  if (c.includes("police") || c.includes("🚓")) {
+    return {
+      name: "Security",
+      color: "#4f46e5",
+      bg: "#eef2ff",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>`,
+    };
+  }
+  if (c.includes("bus") || c.includes("metro") || c.includes("transit") || c.includes("train") || c.includes("🚌")) {
+    return {
+      name: "Transit",
+      color: "#ea580c",
+      bg: "#fff7ed",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="3" rx="2"/><path d="M4 11h16M8 15h.01M16 15h.01M6 19v2M18 19v2"/></svg>`,
+    };
+  }
+  if (c.includes("supermarket") || c.includes("market") || c.includes("mall") || c.includes("store") || c.includes("🛒")) {
+    return {
+      name: "Shopping",
+      color: "#7c3aed",
+      bg: "#f5f3ff",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>`,
+    };
+  }
+  if (c.includes("restaurant") || c.includes("food") || c.includes("cafe") || c.includes("dining") || c.includes("🍽️")) {
+    return {
+      name: "Dining",
+      color: "#d97706",
+      bg: "#fffbeb",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 2v6a3 3 0 0 1-3 3 3 3 0 0 1-3-3V2M15 11v11M5 2v10M9 2v10M5 7h4M7 12v10"/></svg>`,
+    };
+  }
+  if (c.includes("atm") || c.includes("bank") || c.includes("🏦")) {
+    return {
+      name: "Banking",
+      color: "#059669",
+      bg: "#ecfdf5",
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M8 10v11M12 10v11M16 10v11M20 10v11"/></svg>`,
+    };
+  }
+  return {
+    name: "Place",
+    color: "#C9921A",
+    bg: "#fef3d4",
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>`,
+  };
 }
 
-// Internal Leaflet map with a single marker
+// Build prominent red property pin with property name badge and clean SVG icon
+function buildRedPropertyPin(title: string): string {
+  const safeTitle = (title || "Property Location")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  return `
+    <div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;filter:drop-shadow(0 5px 12px rgba(220,38,38,0.45));">
+      <div style="background:#dc2626;color:#ffffff;font-size:11px;font-weight:800;padding:3px 9px;border-radius:12px;white-space:nowrap;margin-bottom:2px;border:1.5px solid #ffffff;max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:system-ui,-apple-system,sans-serif;letter-spacing:0.2px;display:flex;align-items:center;gap:4px;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span>${safeTitle}</span>
+      </div>
+      <div style="position:relative;width:36px;height:44px;display:flex;align-items:center;justify-content:center;">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 34 42" width="36" height="44" style="position:absolute;inset:0;">
+          <path d="M17 0C7.611 0 0 7.611 0 17c0 11.25 17 25 17 25S34 28.25 34 17C34 7.611 26.389 0 17 0z"
+            fill="#dc2626" stroke="#ffffff" stroke-width="2"/>
+          <circle cx="17" cy="16" r="11" fill="#ffffff"/>
+        </svg>
+        <div style="position:relative;z-index:2;color:#dc2626;margin-top:-6px;display:flex;align-items:center;justify-content:center;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Build nearby place pin with place name badge & category vector SVG icon
+function buildPoiPin(category: string, name: string): string {
+  const { color, svg } = getCategorySvg(category);
+  const safeName = (name || "Place")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  return `
+    <div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.3));">
+      <div style="background:#1a1209;color:#ffffff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;white-space:nowrap;margin-bottom:2px;border:1.5px solid #ffffff;max-width:140px;overflow:hidden;text-overflow:ellipsis;font-family:system-ui,-apple-system,sans-serif;letter-spacing:0.2px;">
+        ${safeName}
+      </div>
+      <div style="position:relative;width:34px;height:42px;display:flex;align-items:center;justify-content:center;">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 34 42" width="34" height="42" style="position:absolute;inset:0;">
+          <path d="M17 0C7.611 0 0 7.611 0 17c0 11.25 17 25 17 25S34 28.25 34 17C34 7.611 26.389 0 17 0z"
+            fill="${color}" stroke="#ffffff" stroke-width="2"/>
+          <circle cx="17" cy="16" r="11" fill="#ffffff"/>
+        </svg>
+        <div style="position:relative;z-index:2;color:${color};margin-top:-6px;display:flex;align-items:center;justify-content:center;">
+          ${svg}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Leaflet map supporting property marker and dynamic nearby POI markers
 function DetailLeafletMap({
-  lat, lng, openLink,
-}: { lat: number; lng: number; openLink: string }) {
+  lat,
+  lng,
+  openLink,
+  propertyTitle = "Property Location",
+  propertyAddress = "",
+  nearbyPOIs = [],
+  activeCategory = "",
+  focusedPOI = null,
+}: {
+  lat: number;
+  lng: number;
+  openLink: string;
+  propertyTitle?: string;
+  propertyAddress?: string;
+  nearbyPOIs?: NearbyItem[];
+  activeCategory?: string;
+  focusedPOI?: NearbyItem | null;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mapRef       = useRef<any>(null);
+  const mapRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const propertyMarkerRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const poiLayerRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const poiMarkersMapRef = useRef<Map<string, any>>(new Map());
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -196,19 +351,36 @@ function DetailLeafletMap({
       });
 
       L.tileLayer(
-        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-        { subdomains: "abcd", maxZoom: 19 }
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {
+          subdomains: "abc",
+          maxZoom: 19,
+          attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
+        }
       ).addTo(map);
 
-      // Gold SVG pin marker
-      const icon = L.divIcon({
-        html:       buildDetailPin(),
-        className:  "",
-        iconSize:   [32, 42],
-        iconAnchor: [16, 42],
+      // Red property pin with title tag
+      const redIcon = L.divIcon({
+        html: buildRedPropertyPin(propertyTitle),
+        className: "property-custom-pin",
+        iconSize: [180, 72],
+        iconAnchor: [90, 70],
       });
 
-      L.marker([lat, lng], { icon }).addTo(map);
+      const propMarker = L.marker([lat, lng], { icon: redIcon, zIndexOffset: 1000 }).addTo(map);
+      propMarker.bindPopup(`
+        <div style="font-family:system-ui,-apple-system,sans-serif;padding:3px 4px;min-width:160px;">
+          <div style="font-size:12px;font-weight:800;color:#dc2626;margin-bottom:3px;display:flex;align-items:center;gap:4px;">
+            <span>🏠</span> <span>${propertyTitle}</span>
+          </div>
+          <div style="font-size:11px;color:#666;line-height:1.3;">${propertyAddress}</div>
+        </div>
+      `);
+      propertyMarkerRef.current = propMarker;
+
+      // Layer group for nearby POIs
+      const poiLayer = L.layerGroup().addTo(map);
+      poiLayerRef.current = poiLayer;
 
       mapRef.current = map;
       if (!destroyed) setReady(true);
@@ -222,7 +394,81 @@ function DetailLeafletMap({
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lat, lng]);
+  }, [lat, lng, propertyTitle, propertyAddress]);
+
+  // Update POI markers on the map whenever nearbyPOIs change
+  useEffect(() => {
+    if (!ready || !mapRef.current || !poiLayerRef.current) return;
+    getDetailLeaflet().then(({ L }) => {
+      const map = mapRef.current;
+      const poiLayer = poiLayerRef.current;
+      if (!map || !poiLayer) return;
+
+      poiLayer.clearLayers();
+      poiMarkersMapRef.current.clear();
+
+      if (!nearbyPOIs || nearbyPOIs.length === 0) {
+        map.setView([lat, lng], 16, { animate: true });
+        return;
+      }
+
+      const allLatLngs: [number, number][] = [[lat, lng]];
+
+      nearbyPOIs.forEach((poi) => {
+        if (!isValidCoord(poi.lat, poi.lng)) return;
+        allLatLngs.push([poi.lat, poi.lng]);
+
+        const catCategory = poi.categoryLabel || poi.categoryIcon || activeCategory || "Place";
+        const catInfo = getCategorySvg(catCategory);
+
+        const poiIcon = L.divIcon({
+          html: buildPoiPin(catCategory, poi.name),
+          className: "poi-custom-pin",
+          iconSize: [150, 64],
+          iconAnchor: [75, 62],
+        });
+
+        const marker = L.marker([poi.lat, poi.lng], { icon: poiIcon, zIndexOffset: 500 });
+        const distStr = poi.distKm < 1 ? `${Math.round(poi.distKm * 1000)} m` : `${poi.distKm.toFixed(1)} km`;
+        const walkStr = kmToWalkMins(poi.distKm);
+
+        marker.bindPopup(`
+          <div style="font-family:system-ui,-apple-system,sans-serif;min-width:170px;padding:3px 2px;">
+            <div style="font-size:12px;font-weight:800;color:#1a1209;margin-bottom:3px;line-height:1.25;">${poi.name}</div>
+            <div style="font-size:11px;color:#836737;margin-bottom:6px;display:flex;align-items:center;gap:4px;">
+              <span style="color:${catInfo.color};font-weight:700;">${poi.categoryLabel || catInfo.name}</span> • 
+              <b style="color:#C9921A;">${distStr} (${walkStr} walk)</b>
+            </div>
+            <a href="https://www.google.com/maps/search/?api=1&query=${poi.lat},${poi.lng}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;color:#C9921A;text-decoration:none;">
+              Open in Google Maps ↗
+            </a>
+          </div>
+        `);
+
+        poiLayer.addLayer(marker);
+        poiMarkersMapRef.current.set(`${poi.lat}_${poi.lng}`, marker);
+      });
+
+      if (allLatLngs.length > 1) {
+        const bounds = L.latLngBounds(allLatLngs);
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16, animate: true });
+      }
+    });
+  }, [ready, nearbyPOIs, lat, lng, activeCategory]);
+
+  // Handle focusedPOI when user clicks an individual place in the list
+  useEffect(() => {
+    if (!ready || !mapRef.current || !focusedPOI) return;
+    const map = mapRef.current;
+    if (isValidCoord(focusedPOI.lat, focusedPOI.lng)) {
+      map.flyTo([focusedPOI.lat, focusedPOI.lng], 17, { duration: 0.8 });
+      const markerKey = `${focusedPOI.lat}_${focusedPOI.lng}`;
+      const marker = poiMarkersMapRef.current.get(markerKey);
+      if (marker) {
+        setTimeout(() => marker.openPopup(), 400);
+      }
+    }
+  }, [ready, focusedPOI]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -289,7 +535,13 @@ async function nominatimGeocode(query: string): Promise<{ lat: number; lng: numb
   return null;
 }
 
-function MapSection({ property, onCoordsResolved }: MapSectionProps) {
+function MapSection({
+  property,
+  onCoordsResolved,
+  nearbyPOIs = [],
+  activeCategory = "",
+  focusedPOI = null,
+}: MapSectionProps) {
   const [coords,    setCoords]    = useState<{ lat: number; lng: number } | null>(null);
   const [openLink,  setOpenLink]  = useState("");
   const [status,    setStatus]    = useState<"loading" | "ready" | "no_location">("loading");
@@ -406,9 +658,9 @@ function MapSection({ property, onCoordsResolved }: MapSectionProps) {
 
   return (
     <div
-      className="rounded-2xl overflow-hidden"
+      className="rounded-2xl overflow-hidden w-full shadow-sm"
       style={{
-        height: "clamp(220px, 50vw, 320px)",
+        height: "clamp(280px, 45vw, 420px)",
         border: "1px solid #e8d9c0",
         position: "relative",
         background: "#f5ede0",
@@ -449,12 +701,17 @@ function MapSection({ property, onCoordsResolved }: MapSectionProps) {
         </div>
       )}
 
-      {/* Leaflet map with exact pin */}
+      {/* Leaflet map with property & nearby POI markers */}
       {status === "ready" && coords && (
         <DetailLeafletMap
           lat={coords.lat}
           lng={coords.lng}
           openLink={openLink}
+          propertyTitle={property.title || "Property Location"}
+          propertyAddress={[property.locality, property.city, property.state].filter(Boolean).join(", ")}
+          nearbyPOIs={nearbyPOIs}
+          activeCategory={activeCategory}
+          focusedPOI={focusedPOI}
         />
       )}
     </div>
@@ -773,25 +1030,6 @@ function kmToWalkMins(km: number): string {
   const mins = Math.round((km / 5) * 60);
   if (mins < 2) return "< 1 min";
   return `${mins} min`;
-}
-
-interface NearbyItem {
-  name: string;
-  distKm: number;
-  lat: number;
-  lng: number;
-  phone?: string;
-  website?: string;
-  opening_hours?: string;
-  address?: string;
-  categoryIcon?: string;
-  categoryLabel?: string;
-}
-
-interface NearbyGroup {
-  label: string;
-  icon: string;
-  items: NearbyItem[];
 }
 
 const MAX_PER_CAT = 5;
@@ -1199,9 +1437,23 @@ function POIHoverCard({
   );
 }
 
-function NearbyPlaces({ lat, lng, city, locality }: {
-  lat: number; lng: number; city: string; locality?: string | null;
-}) {
+interface NearbyPlacesProps {
+  lat: number;
+  lng: number;
+  city?: string;
+  locality?: string;
+  onActiveCategoryChange?: (items: NearbyItem[], label: string) => void;
+  onItemSelect?: (item: NearbyItem) => void;
+}
+
+function NearbyPlaces({
+  lat,
+  lng,
+  city,
+  locality,
+  onActiveCategoryChange,
+  onItemSelect,
+}: NearbyPlacesProps) {
   const [groups, setGroups]       = useState<NearbyGroup[]>([]);
   const [loading, setLoading]     = useState(true);
   const [errorMsg, setErrorMsg]   = useState<string | null>(null);
@@ -1266,15 +1518,17 @@ function NearbyPlaces({ lat, lng, city, locality }: {
     return () => { cancelled = true; };
   }, [lat, lng, retryKey]);
 
+  // Notify parent component whenever active category or groups change
+  useEffect(() => {
+    const active = groups.find(g => g.label === openLabel);
+    onActiveCategoryChange?.(active ? active.items : [], openLabel);
+  }, [openLabel, groups, onActiveCategoryChange]);
+
   const toggle = (label: string) =>
     setOpenLabel(prev => (prev === label ? "" : label));
 
   return (
-    <div className="flex flex-col h-full">
-      <p className="text-xs font-semibold mb-2 shrink-0" style={{ color: "#a08858" }}>
-        NEARBY PLACES
-      </p>
-
+    <div className="flex flex-col w-full">
       {/* ── Hover card rendered here, outside all overflow containers ── */}
       {hoveredItem && (
         <POIHoverCard
@@ -1288,31 +1542,48 @@ function NearbyPlaces({ lat, lng, city, locality }: {
         />
       )}
 
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider" style={{ color: "#a08858" }}>
+            NEARBY PLACES
+          </p>
+          <p className="text-xs mt-0.5" style={{ color: "#836737" }}>
+            Explore landmarks, transit, healthcare, and amenities near this property
+          </p>
+        </div>
+      </div>
+
+      {/* Loading Skeleton */}
       {loading && (
-        <div className="space-y-1.5">
-          {/* Category-shaped skeleton — one row per category */}
+        <div className="space-y-2">
           {["🏫 School / College", "🏥 Hospital / Clinic", "🚓 Police Station",
             "🚌 Metro / Bus Stop", "🛒 Supermarket", "🍽️ Restaurant / Food", "🏦 ATM / Bank"
           ].map((label, i) => (
-            <div key={i} className="rounded-xl px-3 py-2.5 animate-pulse flex items-center justify-between"
-              style={{ border: "1px solid #e8d9c0", backgroundColor: "#fff" }}>
-              <div className="flex items-center gap-2 min-w-0">
-                <span style={{ fontSize: 14 }}>{label.split(" ")[0]}</span>
-                <div className="h-3 rounded" style={{ backgroundColor: "#e8d9c0", width: 90 + i * 6 }} />
+            <div
+              key={i}
+              className="rounded-xl px-4 py-3.5 animate-pulse flex items-center justify-between"
+              style={{ border: "1px solid #e8d9c0", backgroundColor: "#fff" }}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span style={{ fontSize: 16 }}>{label.split(" ")[0]}</span>
+                <div className="h-4 rounded" style={{ backgroundColor: "#e8d9c0", width: 120 + i * 10 }} />
               </div>
-              <div className="h-3 w-8 rounded" style={{ backgroundColor: "#e8d9c0" }} />
+              <div className="h-4 w-12 rounded" style={{ backgroundColor: "#e8d9c0" }} />
             </div>
           ))}
-          <p className="text-[10px] text-center mt-1.5" style={{ color: "#a08858" }}>
+          <p className="text-xs text-center mt-2" style={{ color: "#a08858" }}>
             Searching nearby places…
           </p>
         </div>
       )}
 
+      {/* Error state */}
       {!loading && errorMsg && (
-        <div className="rounded-xl px-3 py-3 space-y-2"
-          style={{ border: "1px solid #fcd9a0", backgroundColor: "#fff8ec" }}>
-          <div className="flex items-start gap-2">
+        <div
+          className="rounded-xl px-4 py-3.5 space-y-2.5"
+          style={{ border: "1px solid #fcd9a0", backgroundColor: "#fff8ec" }}
+        >
+          <div className="flex items-start gap-2.5">
             <span className="text-base shrink-0">⚠️</span>
             <div className="min-w-0">
               <p className="text-xs font-semibold" style={{ color: "#92400e" }}>
@@ -1330,7 +1601,7 @@ function NearbyPlaces({ lat, lng, city, locality }: {
           <button
             type="button"
             onClick={() => setRetryKey(k => k + 1)}
-            className="w-full rounded-lg py-1.5 text-xs font-bold transition-colors"
+            className="px-4 rounded-lg py-1.5 text-xs font-bold transition-colors"
             style={{ backgroundColor: GOLD, color: "#fff" }}
           >
             Retry
@@ -1338,8 +1609,9 @@ function NearbyPlaces({ lat, lng, city, locality }: {
         </div>
       )}
 
+      {/* Loaded FAQ-style vertical accordion */}
       {!loading && !errorMsg && (
-        <div className="space-y-1.5 overflow-y-auto" style={{ maxHeight: 520 }}>
+        <div className="space-y-2">
           {groups.filter(g => g.items.length > 0).map(group => {
             const isOpen   = openLabel === group.label;
             const hasItems = group.items.length > 0;
@@ -1351,52 +1623,66 @@ function NearbyPlaces({ lat, lng, city, locality }: {
               : null;
 
             return (
-              <div key={group.label}
+              <div
+                key={group.label}
                 className="rounded-xl overflow-hidden"
-                style={{
-                  border: `1px solid ${isOpen ? GOLD : "#e8d9c0"}`,
-                  backgroundColor: "#fff",
-                  transition: "border-color 0.15s",
-                }}>
-
-                {/* ── Accordion header ── */}
+                style={{ border: "1px solid #e8d9c0", backgroundColor: "#fff" }}
+              >
+                {/* ── Accordion header (same as FAQ) ── */}
                 <button
                   type="button"
                   onClick={() => toggle(group.label)}
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 transition-colors"
+                  className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[#fef9f0]"
                   style={{ backgroundColor: isOpen ? "#fef9f0" : "#fff" }}
                   aria-expanded={isOpen}
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{group.icon}</span>
-                    <span className="text-xs font-semibold truncate" style={{ color: "#1a1209" }}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>{group.icon}</span>
+                    <span className="text-sm font-semibold truncate" style={{ color: "#1a1209" }}>
                       {group.label}
                     </span>
                     {hasItems && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0"
-                        style={{ backgroundColor: "#fef3d4", color: GOLD }}>
-                        {group.items.length}
+                      <span
+                        className="text-xs font-bold px-2 py-0.5 rounded-full shrink-0"
+                        style={{ backgroundColor: "#fef3d4", color: GOLD }}
+                      >
+                        {group.items.length} {group.items.length === 1 ? "place" : "places"}
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {nearestDist && !isOpen && (
-                      <span className="text-[10px] font-bold" style={{ color: GOLD }}>{nearestDist}</span>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {nearestDist && (
+                      <span className="text-xs font-bold" style={{ color: GOLD }}>
+                        {nearestDist}
+                      </span>
                     )}
-                    {!hasItems && !isOpen && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-full"
-                        style={{ backgroundColor: "#f5ede0", color: "#a08858" }}>none</span>
+                    {!hasItems && (
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full"
+                        style={{ backgroundColor: "#f5ede0", color: "#a08858" }}
+                      >
+                        none
+                      </span>
                     )}
                     <ChevronRight
-                      className="h-3.5 w-3.5 shrink-0 transition-transform duration-200"
-                      style={{ color: "#a08858", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }}
+                      className="h-4 w-4 shrink-0 transition-transform duration-200"
+                      style={{
+                        color: "#a08858",
+                        transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+                      }}
                     />
                   </div>
                 </button>
 
-                {/* ── Accordion body — only rendered when open ── */}
+                {/* ── Accordion body (same as FAQ) ── */}
                 {isOpen && (
-                  <div className="border-t" style={{ borderColor: "#f0e4cc", backgroundColor: "#faf6ee" }}>
+                  <div
+                    className="border-t divide-y"
+                    style={{
+                      borderColor: "#f0e4cc",
+                      backgroundColor: "#faf6ee",
+                    }}
+                  >
                     {hasItems ? (
                       <ul className="divide-y" style={{ borderColor: "#f0e4cc" }}>
                         {group.items.map((item, idx) => {
@@ -1417,37 +1703,47 @@ function NearbyPlaces({ lat, lng, city, locality }: {
                               onMouseMove={e => setMousePos({ x: e.clientX, y: e.clientY })}
                               onMouseLeave={scheduleHide}
                             >
-                              <a
-                                href={mapsUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center justify-between gap-2 px-3 py-2 no-underline transition-colors"
+                              <div
+                                onClick={() => {
+                                  onItemSelect?.({ ...item, categoryIcon: group.icon, categoryLabel: group.label });
+                                }}
+                                className="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer transition-colors hover:bg-[#fef3d4]"
                                 style={{ backgroundColor: isHov ? "#fef3d4" : "transparent" }}
                               >
-                                <div className="flex items-center gap-2 min-w-0">
+                                <div className="flex items-center gap-3 min-w-0">
                                   <span
-                                    className="shrink-0 h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white"
-                                    style={{ backgroundColor: idx === 0 ? GOLD : "#c8b08a" }}>
+                                    className="shrink-0 h-5 w-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white"
+                                    style={{ backgroundColor: idx === 0 ? GOLD : "#c8b08a" }}
+                                  >
                                     {idx + 1}
                                   </span>
-                                  <p className="text-xs font-medium truncate" style={{ color: "#1a1209" }}>
+                                  <p className="text-sm font-medium truncate" style={{ color: "#1a1209" }}>
                                     {item.name}
                                   </p>
                                 </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
+                                <div className="flex items-center gap-2.5 shrink-0">
                                   <div className="text-right">
-                                    <p className="text-[10px] font-bold leading-none" style={{ color: GOLD }}>{dist}</p>
-                                    <p className="text-[9px] mt-0.5 leading-none" style={{ color: "#a08858" }}>{walk} walk</p>
+                                    <p className="text-xs font-bold leading-none" style={{ color: GOLD }}>{dist}</p>
+                                    <p className="text-[10px] mt-0.5 leading-none" style={{ color: "#a08858" }}>{walk} walk</p>
                                   </div>
-                                  <Navigation className="h-3 w-3 shrink-0" style={{ color: GOLD }} />
+                                  <a
+                                    href={mapsUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={e => e.stopPropagation()}
+                                    className="p-1 rounded-md hover:bg-amber-100 transition-colors"
+                                    title="Open in Google Maps"
+                                  >
+                                    <Navigation className="h-4 w-4 shrink-0" style={{ color: GOLD }} />
+                                  </a>
                                 </div>
-                              </a>
+                              </div>
                             </li>
                           );
                         })}
                       </ul>
                     ) : (
-                      <p className="px-3 py-2.5 text-xs" style={{ color: "#a08858" }}>
+                      <p className="px-4 py-3 text-sm" style={{ color: "#a08858" }}>
                         No {group.label.toLowerCase()} found within 3 km.
                       </p>
                     )}
@@ -1587,20 +1883,92 @@ function PropertyDetail() {
       .catch(() => setFetchError(true));
   }, [id]);
 
-  // Fetch panorama URL from server (stored in property-images Supabase bucket)
+  // ── 360° panorama URL ────────────────────────────────────────────────────
+  // Priority order:
+  //   1. property.tour_ai_panorama_url   — saved panorama from generate-360
+  //   2. fallbackPanoramaUrl             — fetched via tourApi.get() for
+  //                                        properties posted before the fix
+  //   3. Auto-stitched from images       — built on-the-fly in the browser
+  //                                        from existing uploaded images, then
+  //                                        saved to DB via generate-360
+  const [fallbackPanoramaUrl, setFallbackPanoramaUrl] = useState<string | null>(null);
+  const [autoStitchUrl,       setAutoStitchUrl]       = useState<string | null>(null);
+  const [autoStitching,       setAutoStitching]       = useState(false);
+
+  // Derived: the best panorama URL available right now
+  const activePanoramaUrl =
+    property?.tour_ai_panorama_url || fallbackPanoramaUrl || autoStitchUrl || null;
+
+  // Whether the 360° section should be visible
+  const hasPanorama = !!(
+    (property?.tour_type === "link"          && property.tour_url) ||
+    (property?.tour_type === "model"         && property.tour_model_url) ||
+    (property?.tour_type === "ai_generated"  && activePanoramaUrl) ||
+    autoStitchUrl  // auto-generated even when tour_type is none
+  );
+
+  // Fetch fallback URL when tour_type is ai_generated but URL missing
   useEffect(() => {
-    setPanoramaUrl(null);
-    panoramaApi.get(id)
-      .then(r => setPanoramaUrl(r.panorama_url))
-      .catch(() => {}); // silent — fallback to first image used in viewer
-  }, [id]);
+    if (!property) return;
+    if (property.tour_type === "ai_generated" && !property.tour_ai_panorama_url) {
+      tourApi.get(property.id)
+        .then(t => { if (t.tour_ai_panorama_url) setFallbackPanoramaUrl(t.tour_ai_panorama_url); })
+        .catch(() => {});
+    }
+  }, [property]);
+
+  // Auto-stitch panorama from uploaded images when no panorama URL exists
+  useEffect(() => {
+    if (!property) return;
+    // Skip if we already have a panorama URL from any source
+    if (property.tour_ai_panorama_url || fallbackPanoramaUrl) return;
+    // Skip if tour_type is link or model — those have their own viewers
+    if (property.tour_type === "link" || property.tour_type === "model") return;
+    // Need at least 2 images to make a meaningful panorama
+    const imgs = [...(property.images || [])];
+    if (imgs.length < 2) return;
+    // Only run once
+    if (autoStitchUrl || autoStitching) return;
+
+    setAutoStitching(true);
+
+    const slots = imgs.slice(0, 8).map((url, i) => ({
+      url,
+      angle: i * (360 / Math.min(imgs.length, 8)),
+    }));
+
+    stitchPanorama(slots)
+      .then(async ({ blob, dataUrl }) => {
+        // Show the viewer immediately with the local data URL
+        setAutoStitchUrl(dataUrl);
+        setAutoStitching(false);
+
+        // Persist to DB so next page load shows it instantly from tour_ai_panorama_url
+        try {
+          const panoramaFile = new File([blob], `panorama-${property.id}.jpg`, { type: "image/jpeg" });
+          const directions = slots.map((s, i) => ({ slot: i, label: `Image ${i + 1}`, angle: s.angle }));
+          const res = await tourApi.generate360(property.id, [], panoramaFile, directions);
+          if (res.tour_ai_panorama_url) {
+            // Upgrade from data URL to server URL
+            setAutoStitchUrl(null);
+            setFallbackPanoramaUrl(res.tour_ai_panorama_url);
+          }
+        } catch {
+          // Save failed — keep the local data URL, viewer still works
+        }
+      })
+      .catch(() => { setAutoStitching(false); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [property?.id, property?.images?.length]);
 
   const [saved, setSaved]           = useState(false);
   const [showAll, setShowAll]       = useState(false);
   const [showTour, setShowTour]     = useState(false);
   const tourSectionRef              = useRef<HTMLDivElement>(null);
-  const [panoramaUrl, setPanoramaUrl] = useState<string | null>(null);
   const [resolvedCoords, setResolvedCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [activeNearbyPOIs, setActiveNearbyPOIs] = useState<NearbyItem[]>([]);
+  const [activeCategoryLabel, setActiveCategoryLabel] = useState<string>("");
+  const [focusedNearbyPOI, setFocusedNearbyPOI] = useState<NearbyItem | null>(null);
 
   // Pre-load Leaflet JS+CSS immediately on page load — not lazy — so map renders without delay
   useEffect(() => { getDetailLeaflet().catch(() => {}); }, []);
@@ -1856,7 +2224,7 @@ function PropertyDetail() {
           <PhotoGallery
             images={images}
             title={property.title}
-            hasTour={images.length > 0}
+            hasTour={hasPanorama}
             onView360={() => {
               setShowTour(v => !v);
               setTimeout(() => {
@@ -1867,7 +2235,7 @@ function PropertyDetail() {
         </div>
 
         {/* ── 360° / 3D Virtual Tour — inline below gallery ──────── */}
-        {images.length > 0 && (
+        {hasPanorama && (
           <div ref={tourSectionRef} className="mt-4" id="property-3d-tour">
 
             {/* Toggle bar */}
@@ -1922,18 +2290,24 @@ function PropertyDetail() {
                     height="480px"
                   />
                 ) : (
-                  /* Use stored panorama_360_url (auto-generated on upload)
-                     or fall back to the cover image for immediate viewing. */
-                  <ThreeDViewer
-                    tourType="ai_generated"
-                    tourPanoramaUrl={
-                      property.tour_ai_panorama_url
-                      || panoramaUrl
-                      || images[0]
-                    }
-                    title={property.title}
-                    height="480px"
-                  />
+                  /* Render the real stitched equirectangular panorama stored
+                     in tour_ai_panorama_url. Fall back to a separately-fetched
+                     URL for properties posted before the panorama save fix. */
+                  activePanoramaUrl ? (
+                    <ThreeDViewer
+                      tourType="ai_generated"
+                      tourPanoramaUrl={activePanoramaUrl}
+                      title={property.title}
+                      height="480px"
+                    />
+                  ) : autoStitching ? (
+                    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl py-12"
+                      style={{ backgroundColor: "#1a1209" }}>
+                      <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20"
+                        style={{ borderTopColor: "#C9921A" }} />
+                      <p className="text-sm text-white/60">Generating 360° panorama from property photos…</p>
+                    </div>
+                  ) : null
                 )}
               </div>
             )}
@@ -2236,25 +2610,32 @@ function PropertyDetail() {
             </div>
 
             {/* ── Location + Map ─────────────────────────────── */}
-            <div className="mt-6">
-              <h2 className="text-lg font-bold mb-2" style={{ color: "#1a1209" }}>Location</h2>
-              {[property.locality, property.city, property.state, property.pincode].filter(Boolean).length > 0 && (
-                <p className="flex items-center gap-1.5 text-sm mb-4" style={{ color: "#836737" }}>
-                  <MapPin className="h-4 w-4 shrink-0" style={{ color: GOLD }} />
-                  {[property.locality, property.city, property.state, property.pincode].filter(Boolean).join(", ")}
-                </p>
-              )}
+            <div className="mt-8">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h2 className="text-lg font-bold" style={{ color: "#1a1209" }}>Location & Surroundings</h2>
+                  {[property.locality, property.city, property.state, property.pincode].filter(Boolean).length > 0 && (
+                    <p className="flex items-center gap-1.5 text-sm mt-1" style={{ color: "#836737" }}>
+                      <MapPin className="h-4 w-4 shrink-0" style={{ color: GOLD }} />
+                      {[property.locality, property.city, property.state, property.pincode].filter(Boolean).join(", ")}
+                    </p>
+                  )}
+                </div>
+              </div>
 
-              {/* Map + Nearby side by side */}
-              <div className="grid gap-4 items-start lg:grid-cols-[1fr_260px]">
-                {/* Map */}
-                <MapSection property={property} onCoordsResolved={setResolvedCoords} />
+              {/* Full Width Map */}
+              <div className="w-full">
+                <MapSection
+                  property={property}
+                  onCoordsResolved={setResolvedCoords}
+                  nearbyPOIs={activeNearbyPOIs}
+                  activeCategory={activeCategoryLabel}
+                  focusedPOI={focusedNearbyPOI}
+                />
+              </div>
 
-                {/* Nearby accordion — compute coords in priority order:
-                    1. Exact DB coords (available immediately on property load)
-                    2. resolvedCoords set by MapSection callback (after async resolution)
-                    NearbyPlaces renders its own loading skeleton so we always mount
-                    it as soon as ANY valid coords are available. */}
+              {/* Nearby Places Section underneath the full map */}
+              <div className="mt-6">
                 {(() => {
                   // Helper: treat 0, "0", null, NaN, "" all as invalid
                   const isValidLatLng = (v: number | null) =>
@@ -2266,7 +2647,6 @@ function PropertyDetail() {
                   const dbValid = isValidLatLng(dbLat) && isValidLatLng(dbLng);
 
                   // Priority 2: coords resolved asynchronously by MapSection
-                  // (via Nominatim geocode, map_url extraction, etc.)
                   const nearbyLat = dbValid ? dbLat! : (resolvedCoords?.lat ?? null);
                   const nearbyLng = dbValid ? dbLng! : (resolvedCoords?.lng ?? null);
                   const hasCoords = isValidLatLng(nearbyLat) && isValidLatLng(nearbyLng);
@@ -2276,47 +2656,28 @@ function PropertyDetail() {
                       lat={nearbyLat!}
                       lng={nearbyLng!}
                       city={property.city}
-                      locality={property.locality}
+                      locality={property.locality || undefined}
+                      onActiveCategoryChange={(items, label) => {
+                        setActiveNearbyPOIs(items);
+                        setActiveCategoryLabel(label);
+                      }}
+                      onItemSelect={(item) => {
+                        setFocusedNearbyPOI(item);
+                      }}
                     />
                   ) : (
-                    <div className="rounded-xl px-3 py-4 text-center"
+                    <div className="rounded-2xl p-5 text-center"
                       style={{ border: "1px solid #e8d9c0", backgroundColor: "#fff" }}>
-                      <p className="text-xs font-semibold mb-1" style={{ color: "#a08858" }}>NEARBY PLACES</p>
-                      <p className="text-[11px]" style={{ color: "#c8b08a" }}>
-                        {resolvedCoords === null ? "Resolving location…" : "Location not available"}
+                      <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: "#a08858" }}>NEARBY PLACES</p>
+                      <p className="text-xs" style={{ color: "#c8b08a" }}>
+                        {resolvedCoords === null ? "Resolving nearby places…" : "Location not available"}
                       </p>
                     </div>
                   );
                 })()}
               </div>
 
-              {/* Open in Google Maps link — always built from resolved coords so
-                  it opens reliably on all devices and browsers.
-                  Falls back to address string when coords are still loading. */}
-              {(() => {
-                const mapsHref = resolvedCoords
-                  ? `https://www.google.com/maps/search/?api=1&query=${resolvedCoords.lat},${resolvedCoords.lng}`
-                  : property.map_url
-                    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                        [property.locality, property.city, property.state]
-                          .filter(Boolean).join(", "))}`
-                    : null;
-                if (!mapsHref) return null;
-                return (
-                  <a
-                    href={mapsHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium hover:underline"
-                    style={{ color: GOLD }}
-                  >
-                    <Navigation className="h-4 w-4" />
-                    Open in Google Maps
-                  </a>
-                );
-              })()}
-
-              <hr className="mt-6" style={{ borderColor: "#e8d9c0" }} />
+              <hr className="mt-8" style={{ borderColor: "#e8d9c0" }} />
             </div>
 
             {/* ── Frequently Asked Questions ─────────────────── */}

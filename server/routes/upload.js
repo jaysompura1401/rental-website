@@ -215,47 +215,45 @@ router.get("/property-images/:propertyId", async (req, res) => {
 });
 
 // ─── GET /api/upload/panorama/:propertyId ─────────────────────────────────────
-// Returns the stored panorama_360_url for a property.
-// If the column doesn't exist yet (migration not run), falls back to
-// cover_image_url so the viewer always has something to show.
+// Returns the best available panorama URL for a property.
+// Priority: tour_ai_panorama_url (real stitched 360°) → panorama_360_url
+// (cover image auto-set on upload) → cover_image_url → first uploaded image.
+// This endpoint is used as a fallback by the property detail page.
 router.get("/panorama/:propertyId", async (req, res) => {
   try {
     const { propertyId } = req.params;
 
-    // Try panorama_360_url first (added by ensurePanoramaColumn)
+    // Priority 1: real AI-generated panorama from generate-360
     let panoramaUrl = null;
     try {
       const [rows] = await pool.query(
-        "SELECT panorama_360_url FROM nivaas_properties WHERE id = ?",
-        [propertyId]
-      );
-      if (rows.length > 0) panoramaUrl = rows[0].panorama_360_url ?? null;
-    } catch {
-      // column doesn't exist yet — fall through to cover image fallback
-    }
-
-    // Fallback: use cover_image_url if panorama not set
-    if (!panoramaUrl) {
-      const [rows] = await pool.query(
-        `SELECT p.cover_image_url,
-                pi.url AS first_image_url
-         FROM nivaas_properties p
-         LEFT JOIN nivaas_property_images pi
-           ON pi.property_id = p.id
-           AND pi.is_cover = true
-         WHERE p.id = ?
-         LIMIT 1`,
+        `SELECT tour_ai_panorama_url, panorama_360_url
+         FROM nivaas_properties WHERE id = $1`,
         [propertyId]
       );
       if (rows.length > 0) {
-        panoramaUrl = rows[0].first_image_url ?? rows[0].cover_image_url ?? null;
+        // Prefer the real stitched panorama over the auto-set cover image
+        panoramaUrl = rows[0].tour_ai_panorama_url ?? rows[0].panorama_360_url ?? null;
       }
+    } catch {
+      // columns may not exist — fall through
     }
 
-    // If still nothing, pick first uploaded image
+    // Priority 2: cover image
+    if (!panoramaUrl) {
+      try {
+        const [rows] = await pool.query(
+          `SELECT cover_image_url FROM nivaas_properties WHERE id = $1 LIMIT 1`,
+          [propertyId]
+        );
+        if (rows.length > 0) panoramaUrl = rows[0].cover_image_url ?? null;
+      } catch { /* ignore */ }
+    }
+
+    // Priority 3: first uploaded image
     if (!panoramaUrl) {
       const [imgs] = await pool.query(
-        "SELECT url FROM nivaas_property_images WHERE property_id = ? ORDER BY sort_order ASC LIMIT 1",
+        "SELECT url FROM nivaas_property_images WHERE property_id = $1 ORDER BY sort_order ASC LIMIT 1",
         [propertyId]
       );
       if (imgs.length > 0) panoramaUrl = imgs[0].url;

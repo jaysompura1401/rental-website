@@ -5,21 +5,35 @@
  *
  *  "link"         → <iframe> embed (Matterport, Kuula, etc.)
  *  "model"        → Google <model-viewer> CDN web component (GLB/GLTF)
- *  "ai_generated" → CSS-based 360° panorama viewer (works with blob: and https: URLs)
+ *  "ai_generated" → Pannellum CDN equirectangular sphere viewer (true 360°)
  *
- * The panorama viewer uses a CSS background-position scroll approach:
- *   - The image is repeated horizontally via background-repeat
- *   - Drag moves the background-position-x (yaw)
- *   - This works with blob: URLs, crossOrigin restrictions, and doesn't need canvas
- *   - Much faster than pixel-by-pixel canvas projection
+ * PanoramaViewer uses pannellum (https://pannellum.org) loaded from CDN.
+ * Pannellum renders the equirectangular image onto a WebGL sphere so the
+ * user truly stands at the centre of the room and looks in any direction.
+ * It handles drag (mouse + touch), zoom (pinch + scroll), and fullscreen.
+ *
+ * CDN files loaded once per page:
+ *   https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js
+ *   https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css
+ *
+ * Works with both blob: URLs (local preview) and https: Supabase Storage URLs.
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Maximize2, RotateCcw, ZoomIn, ZoomOut, X, Box, Globe } from "lucide-react";
+import {
+  Loader2, Maximize2, RotateCcw, ZoomIn, ZoomOut, X, Box, Globe,
+} from "lucide-react";
+
+declare global {
+  interface Window {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pannellum?: any;
+  }
+}
 
 const GOLD = "#C9921A";
 
-// ── Inject model-viewer script once ──────────────────────────────────────────
+// ── Inject Google model-viewer script once ────────────────────────────────────
 let modelViewerInjected = false;
 function ensureModelViewer() {
   if (modelViewerInjected || typeof document === "undefined") return;
@@ -31,6 +45,40 @@ function ensureModelViewer() {
   document.head.appendChild(s);
   modelViewerInjected = true;
 }
+
+// ── Inject pannellum CSS + JS from CDN once ───────────────────────────────────
+let pannellumInjected = false;
+let pannellumReady = false;
+const pannellumReadyCallbacks: Array<() => void> = [];
+
+function ensurePannellum(onReady: () => void) {
+  if (pannellumReady) { onReady(); return; }
+  pannellumReadyCallbacks.push(onReady);
+  if (pannellumInjected) return;
+  pannellumInjected = true;
+
+  // Inject CSS
+  if (!document.querySelector('link[data-pn="1"]')) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.setAttribute("data-pn", "1");
+    link.href = "https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css";
+    document.head.appendChild(link);
+  }
+
+  // Inject JS
+  const script = document.createElement("script");
+  script.setAttribute("data-pn", "1");
+  script.src = "https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js";
+  script.onload = () => {
+    pannellumReady = true;
+    pannellumReadyCallbacks.forEach(cb => cb());
+    pannellumReadyCallbacks.length = 0;
+  };
+  document.head.appendChild(script);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export type TourType = "none" | "link" | "model" | "ai_generated";
 
@@ -52,7 +100,7 @@ export function ThreeDViewer({
   title = "3D Property Tour",
   height = "480px",
 }: ThreeDViewerProps) {
-  if (tourType === "link"  && tourUrl)
+  if (tourType === "link" && tourUrl)
     return <LinkViewer url={tourUrl} title={title} height={height} />;
   if (tourType === "model" && tourModelUrl)
     return <ModelViewer url={tourModelUrl} title={title} height={height} />;
@@ -62,11 +110,11 @@ export function ThreeDViewer({
 }
 
 // =============================================================================
-// 1. External link iframe
+// 1. External link iframe (unchanged)
 // =============================================================================
 function LinkViewer({ url, title, height }: { url: string; title: string; height: string }) {
   const [loaded, setLoaded] = useState(false);
-  const [full,   setFull]   = useState(false);
+  const [full, setFull] = useState(false);
 
   const embedUrl = (() => {
     try {
@@ -81,8 +129,10 @@ function LinkViewer({ url, title, height }: { url: string; title: string; height
   })();
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border"
-      style={{ height: full ? "90vh" : height, borderColor: "#e8d9c0", backgroundColor: "#1a1209" }}>
+    <div
+      className="relative rounded-2xl overflow-hidden border"
+      style={{ height: full ? "90vh" : height, borderColor: "#e8d9c0", backgroundColor: "#1a1209" }}
+    >
       {!loaded && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10"
           style={{ backgroundColor: "#1a1209" }}>
@@ -90,13 +140,15 @@ function LinkViewer({ url, title, height }: { url: string; title: string; height
           <p className="text-sm font-medium text-white/70">Loading 3D Tour…</p>
         </div>
       )}
-      <iframe src={embedUrl} title={title}
+      <iframe
+        src={embedUrl} title={title}
         allow="xr-spatial-tracking; gyroscope; accelerometer; fullscreen"
         allowFullScreen onLoad={() => setLoaded(true)}
         className="w-full h-full border-0"
-        style={{ opacity: loaded ? 1 : 0, transition: "opacity 0.4s" }} />
+        style={{ opacity: loaded ? 1 : 0, transition: "opacity 0.4s" }}
+      />
       <div className="absolute bottom-3 right-3 z-20">
-        <ControlBtn onClick={() => setFull(f => !f)} title={full ? "Exit" : "Expand"}>
+        <ControlBtn onClick={() => setFull(f => !f)} title={full ? "Exit fullscreen" : "Fullscreen"}>
           {full ? <X className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </ControlBtn>
       </div>
@@ -106,7 +158,7 @@ function LinkViewer({ url, title, height }: { url: string; title: string; height
 }
 
 // =============================================================================
-// 2. GLB / GLTF model viewer
+// 2. GLB / GLTF model viewer (unchanged)
 // =============================================================================
 function ModelViewer({ url, title, height }: { url: string; title: string; height: string }) {
   const [ready, setReady] = useState(false);
@@ -120,8 +172,10 @@ function ModelViewer({ url, title, height }: { url: string; title: string; heigh
   }, []);
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border"
-      style={{ height, borderColor: "#e8d9c0", backgroundColor: "#1a1209" }}>
+    <div
+      className="relative rounded-2xl overflow-hidden border"
+      style={{ height, borderColor: "#e8d9c0", backgroundColor: "#1a1209" }}
+    >
       {!ready && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10"
           style={{ backgroundColor: "#1a1209" }}>
@@ -136,8 +190,10 @@ function ModelViewer({ url, title, height }: { url: string; title: string; heigh
           style={{ width: "100%", height: "100%", backgroundColor: "#1a1209" }} loading="eager" />
       )}
       {ready && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-xs font-medium text-white pointer-events-none select-none"
-          style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}>
+        <div
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-xs font-medium text-white pointer-events-none select-none"
+          style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}
+        >
           Drag to rotate · Scroll to zoom
         </div>
       )}
@@ -147,164 +203,239 @@ function ModelViewer({ url, title, height }: { url: string; title: string; heigh
 }
 
 // =============================================================================
-// 3. 360° Panorama Viewer — CSS background-scroll approach
+// 3. True 360° Panorama Viewer — Pannellum equirectangular sphere
 //
-//  Works with both:
-//    • blob: URLs  (local preview before publish, no crossOrigin needed)
-//    • https: URLs (server-hosted equirectangular images)
+// Pannellum maps the equirectangular image onto a WebGL sphere.
+// The user stands at the centre and can look in any direction — exactly the
+// experience of being inside the room. Drag rotates the view; pinch/scroll
+// zooms; the image wraps continuously at the 360° seam.
 //
-//  Technique: The image is set as a CSS background-image with background-size
-//  covering the full height. The background-position-x is animated continuously
-//  for auto-rotate, and controlled by mouse/touch drag. This avoids canvas
-//  drawImage() which fails with blob: + crossOrigin="anonymous".
+// Pannellum's own controls (drag + pinch) are used directly; we overlay
+// our own zoom/reset/fullscreen buttons for visual consistency.
 // =============================================================================
-function PanoramaViewer({ url, title, height }: { url: string; title: string; height: string }) {
+function PanoramaViewer({
+  url,
+  title: _title,
+  height,
+}: {
+  url: string;
+  title: string;
+  height: string;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const stateRef     = useRef({ xPos: 0, dragging: false, lastX: 0, animId: 0, autoSpeed: 0.03 });
-  const [imgLoaded,  setImgLoaded]  = useState(false);
-  const [imgError,   setImgError]   = useState(false);
-  const [full,       setFull]       = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const viewerRef = useRef<any>(null);
 
-  // Pre-load image to check it's valid (without crossOrigin so blob: works)
+  const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
+  const [full, setFull] = useState(false);
+
+  // ── Build / rebuild pannellum viewer whenever url changes ─────────────────
   useEffect(() => {
-    setImgLoaded(false);
-    setImgError(false);
-    const img = new Image();
-    // Do NOT set crossOrigin — blob: URLs fail with it
-    img.onload  = () => setImgLoaded(true);
-    img.onerror = () => setImgError(true);
-    img.src = url;
-    return () => { img.onload = null; img.onerror = null; };
+    if (!url) return;
+
+    setStatus("loading");
+
+    let destroyed = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Destroy previous viewer instance if any
+    const destroy = () => {
+      destroyed = true;
+      if (pollTimer)    clearInterval(pollTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      try { viewerRef.current?.destroy(); } catch { /* ignore */ }
+      viewerRef.current = null;
+    };
+
+    ensurePannellum(() => {
+      const container = containerRef.current;
+      if (!container || destroyed) return;
+
+      // Clear and reset the container div so pannellum gets a clean element
+      container.innerHTML = "";
+
+      try {
+        viewerRef.current = window.pannellum.viewer(container, {
+          type:           "equirectangular",
+          panorama:       url,
+          autoLoad:       true,
+          autoRotate:     -1,      // deg/s, stops on any interaction
+          autoRotateInactivityDelay: 3000,
+          compass:              false,
+          showZoomCtrl:         false,
+          showFullscreenCtrl:   false,
+          showControls:         false,
+          mouseZoom:            true,
+          touchPanSpeedCoeffFactor: 1,
+          hfov:    100,
+          minHfov: 30,
+          maxHfov: 150,
+          pitch:   0,
+          yaw:     0,
+          // onLoad fires when pannellum finishes drawing the first frame
+          onLoad: () => {
+            if (!destroyed) setStatus("ok");
+          },
+          onError: () => {
+            if (!destroyed) setStatus("error");
+          },
+        });
+
+        // Polling fallback: pannellum's onLoad sometimes doesn't fire for
+        // data: URLs in certain browser versions. Poll until the WebGL canvas
+        // appears inside the container or 10 s timeout.
+        pollTimer = setInterval(() => {
+          if (destroyed) { clearInterval(pollTimer!); return; }
+          const gl = container.querySelector("canvas");
+          if (gl) {
+            clearInterval(pollTimer!);
+            pollTimer = null;
+            setStatus("ok");
+          }
+        }, 200);
+
+        // Hard timeout — show error if nothing renders in 15 s
+        timeoutTimer = setTimeout(() => {
+          if (destroyed) return;
+          clearInterval(pollTimer!);
+          pollTimer = null;
+          setStatus(prev => prev === "loading" ? "error" : prev);
+        }, 15000);
+
+      } catch (e) {
+        console.error("[PanoramaViewer] pannellum init error:", e);
+        if (!destroyed) setStatus("error");
+      }
+    });
+
+    return destroy;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url]);
 
-  // Animation loop — moves background-position-x
+  // ── Sync full-screen height with state ────────────────────────────────────
   useEffect(() => {
-    if (!imgLoaded) return;
+    const handler = () => setFull(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  // ── Control handlers ──────────────────────────────────────────────────────
+  const zoomIn = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    v.setHfov(Math.max(30, v.getHfov() - 15));
+  };
+  const zoomOut = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    v.setHfov(Math.min(150, v.getHfov() + 15));
+  };
+  const resetView = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    v.setYaw(0);
+    v.setPitch(0);
+    v.setHfov(100);
+  };
+  const toggleFullscreen = () => {
     const el = containerRef.current;
     if (!el) return;
-    const s = stateRef.current;
-
-    const loop = () => {
-      if (!s.dragging) {
-        s.xPos = (s.xPos + s.autoSpeed) % 100;
-      }
-      el.style.backgroundPositionX = `${s.xPos}%`;
-      s.animId = requestAnimationFrame(loop);
-    };
-    s.animId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(s.animId);
-  }, [imgLoaded]);
-
-  // Mouse drag
-  const onMouseDown = (e: React.MouseEvent) => {
-    const s = stateRef.current;
-    s.dragging = true; s.lastX = e.clientX;
-    e.preventDefault();
+    if (!document.fullscreenElement) {
+      el.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
   };
-  const onMouseMove = (e: React.MouseEvent) => {
-    const s = stateRef.current;
-    if (!s.dragging) return;
-    const dx = e.clientX - s.lastX;
-    s.xPos = ((s.xPos - dx * 0.04) % 100 + 100) % 100;
-    s.lastX = e.clientX;
-  };
-  const onMouseUp = () => { stateRef.current.dragging = false; };
-
-  // Touch drag
-  const onTouchStart = (e: React.TouchEvent) => {
-    const s = stateRef.current;
-    s.dragging = true; s.lastX = e.touches[0].clientX;
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    const s = stateRef.current;
-    if (!s.dragging) return;
-    const dx = e.touches[0].clientX - s.lastX;
-    s.xPos = ((s.xPos - dx * 0.04) % 100 + 100) % 100;
-    s.lastX = e.touches[0].clientX;
-  };
-  const onTouchEnd = () => { stateRef.current.dragging = false; };
-
-  // Zoom: change background-size percentage
-  const [zoom, setZoom] = useState(200); // 200% = 2× image width
-  const zoomIn  = () => setZoom(z => Math.min(400, z + 30));
-  const zoomOut = () => setZoom(z => Math.max(100, z - 30));
-  const reset   = () => { setZoom(200); stateRef.current.xPos = 0; };
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border"
-      style={{ height: full ? "90vh" : height, borderColor: "#e8d9c0" }}>
-
-      {/* Loading */}
-      {!imgLoaded && !imgError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-          style={{ backgroundColor: "#1a1209" }}>
+    <div
+      className="relative rounded-2xl overflow-hidden border"
+      style={{
+        height: full ? "100vh" : height,
+        borderColor: "#e8d9c0",
+        backgroundColor: "#1a1209",
+      }}
+    >
+      {/* Loading overlay */}
+      {status === "loading" && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 pointer-events-none"
+          style={{ backgroundColor: "#1a1209" }}
+        >
           <Loader2 className="h-8 w-8 animate-spin" style={{ color: GOLD }} />
           <p className="text-sm font-medium text-white/70">Loading 360° View…</p>
         </div>
       )}
 
-      {/* Error */}
-      {imgError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2"
-          style={{ backgroundColor: "#1a1209" }}>
+      {/* Error state */}
+      {status === "error" && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-2 z-10"
+          style={{ backgroundColor: "#1a1209" }}
+        >
           <span className="text-3xl">🌐</span>
-          <p className="text-sm text-white/70">Could not load panorama image</p>
+          <p className="text-sm font-medium text-white/70">Could not load panorama</p>
+          <p className="text-xs text-white/40">The image may still be processing — try again shortly</p>
         </div>
       )}
 
-      {/* Panorama — CSS background-image scroll */}
-      {imgLoaded && (
-        <div
-          ref={containerRef}
-          className="w-full h-full cursor-grab active:cursor-grabbing select-none"
-          style={{
-            backgroundImage: `url("${url}")`,
-            backgroundRepeat: "repeat-x",
-            backgroundSize: `${zoom}% auto`,
-            backgroundPositionY: "center",
-            backgroundPositionX: "0%",
-            touchAction: "none",
-          }}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-        />
-      )}
+      {/* Pannellum mounts here — it fills the container div */}
+      <div
+        ref={containerRef}
+        className="w-full h-full"
+        style={{ display: status === "error" ? "none" : "block" }}
+      />
 
-      {/* Controls */}
-      {imgLoaded && (
+      {/* Our control overlay — shown once loaded */}
+      {status === "ok" && (
         <>
+          {/* Bottom-right: zoom / reset / fullscreen */}
           <div className="absolute bottom-3 right-3 flex gap-2 z-20">
-            <ControlBtn onClick={zoomIn}  title="Zoom in">  <ZoomIn  className="h-4 w-4" /></ControlBtn>
-            <ControlBtn onClick={zoomOut} title="Zoom out"> <ZoomOut className="h-4 w-4" /></ControlBtn>
-            <ControlBtn onClick={reset}   title="Reset">    <RotateCcw className="h-4 w-4" /></ControlBtn>
-            <ControlBtn onClick={() => setFull(f => !f)} title={full ? "Exit" : "Expand"}>
+            <ControlBtn onClick={zoomIn}          title="Zoom in">
+              <ZoomIn className="h-4 w-4" />
+            </ControlBtn>
+            <ControlBtn onClick={zoomOut}         title="Zoom out">
+              <ZoomOut className="h-4 w-4" />
+            </ControlBtn>
+            <ControlBtn onClick={resetView}       title="Reset view">
+              <RotateCcw className="h-4 w-4" />
+            </ControlBtn>
+            <ControlBtn onClick={toggleFullscreen} title={full ? "Exit fullscreen" : "Fullscreen"}>
               {full ? <X className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
             </ControlBtn>
           </div>
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-xs font-medium text-white pointer-events-none select-none"
-            style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}>
-            Drag to look around · Scroll buttons to zoom
+
+          {/* Bottom-center hint */}
+          <div
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-xs font-medium text-white pointer-events-none select-none"
+            style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}
+          >
+            Drag to look around · Pinch or buttons to zoom
           </div>
         </>
       )}
 
-      {/* Badge */}
-      <TourBadge icon={<span className="text-[10px]">✨</span>} label="AI 360° View" />
+      {/* 360° badge */}
+      <TourBadge icon={<span className="text-[10px]">✨</span>} label="360° View" />
     </div>
   );
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
-function ControlBtn({ onClick, title, children }: { onClick: () => void; title: string; children: React.ReactNode }) {
+function ControlBtn({
+  onClick, title, children,
+}: {
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <button type="button" onClick={onClick} title={title}
+    <button
+      type="button" onClick={onClick} title={title}
       className="flex h-8 w-8 items-center justify-center rounded-xl text-white transition hover:scale-110 active:scale-95"
-      style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}>
+      style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}
+    >
       {children}
     </button>
   );
@@ -312,8 +443,10 @@ function ControlBtn({ onClick, title, children }: { onClick: () => void; title: 
 
 function TourBadge({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
-    <div className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold text-white pointer-events-none select-none"
-      style={{ backgroundColor: "rgba(201,146,26,0.88)", backdropFilter: "blur(4px)" }}>
+    <div
+      className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold text-white pointer-events-none select-none"
+      style={{ backgroundColor: "rgba(201,146,26,0.88)", backdropFilter: "blur(4px)" }}
+    >
       {icon}
       <span>{label}</span>
     </div>

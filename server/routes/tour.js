@@ -5,9 +5,15 @@
  *
  *   POST /api/tour/upload-model/:propertyId   — upload a GLB/GLTF 3D model file
  *   POST /api/tour/set-link/:propertyId       — save an external tour URL (Matterport / Kuula / etc.)
- *   POST /api/tour/generate-360/:propertyId   — AI: compose 360° panorama from uploaded property images
+ *   POST /api/tour/generate-360/:propertyId   — store a pre-stitched panorama (from browser canvas)
+ *                                               or fall back to server-side stitching if needed
  *   GET  /api/tour/:propertyId                — fetch tour data for a property
  *   DELETE /api/tour/:propertyId              — remove tour data (reset to 'none')
+ *
+ * generate-360 accepts multipart/form-data with these fields:
+ *   panorama   (single file)  — pre-stitched 2:1 equirectangular JPEG from browser canvas (preferred)
+ *   images[]   (array)        — raw directional source images (legacy / fallback path)
+ *   directions (JSON string)  — optional metadata: [{slot, label, angle}] for each source image
  */
 
 import { Router }       from "express";
@@ -39,7 +45,10 @@ const modelUpload = multer({
   limits: { fileSize: 150 * 1024 * 1024 }, // 150 MB
 });
 
-// ─── Multer — accept images for AI 360° generation (max 15 MB each, up to 20) ─
+// ─── Multer — accept images for 360° generation ───────────────────────────────
+// Handles two fields:
+//   "panorama" — single pre-stitched 2:1 JPEG from browser canvas (max 25 MB)
+//   "images"   — up to 20 raw directional source images (max 15 MB each)
 const aiImageUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter: (_req, file, cb) => {
@@ -47,7 +56,7 @@ const aiImageUpload = multer({
     if (allowed.includes(file.mimetype)) return cb(null, true);
     cb(new Error("Only JPG, PNG and WEBP images are allowed"), false);
   },
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB per image
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB — large enough for a pre-stitched 4K panorama
 });
 
 // ─── Supabase Storage bucket for 3D models ────────────────────────────────────
@@ -89,60 +98,91 @@ async function removeFromSupabase(bucket, storagePath) {
   }
 }
 
-// ─── Equirectangular panorama composer (pure-JS, no external AI API needed) ──
+// ─── Panorama storage helper ──────────────────────────────────────────────────
 //
-// Strategy: arrange uploaded room photos side by side in a 2:1 aspect ratio
-// canvas by stitching them as equal-width horizontal strips. This produces a
-// cylindrical 360° approximation that works correctly in pannellum / A-Frame.
+// PRIMARY PATH — browser pre-stitched panorama:
+//   The browser canvas has already produced a proper 2:1 equirectangular JPEG
+//   and sent it as the "panorama" field. We just store it in Supabase.
 //
-// For production you can swap this out for a proper AI service (e.g.
-// Stable Diffusion inpainting, Hugging Face Spaces, or a custom model) by
-// replacing the body of `buildSimulated360` with an HTTP call to that service.
+// FALLBACK PATH — server-side stitching:
+//   Called when only raw source images are provided (legacy / programmatic use).
+//   Tries the `canvas` npm package; if unavailable, falls back to the first
+//   image so the viewer always has something to render.
 //
-// We use the Canvas API via the `canvas` npm package if available, otherwise
-// we fall back to returning the first uploaded image directly as the panorama
-// (which still lets pannellum render a basic equirectangular view).
-async function buildSimulated360(propertyId, imageUrls) {
-  // Try to use @napi-rs/canvas or canvas package for actual compositing
+async function storePanorama(propertyId, panoramaBuffer, mimetype) {
+  const objPath   = `${propertyId}/panorama-360-${uuidv4()}.jpg`;
+  const publicUrl = await uploadBufferToSupabase(IMAGES_BUCKET, objPath, panoramaBuffer, mimetype);
+  return { panoramaUrl: publicUrl, storagePath: objPath };
+}
+
+async function buildSimulated360(propertyId, imageUrls, directions) {
+  // directions: optional [{slot, label, angle}] — used for angular placement when stitching
   try {
     const { createCanvas, loadImage } = await import("canvas").catch(() => {
       throw new Error("canvas package not installed");
     });
 
-    const count   = imageUrls.length;
-    const imgW    = 1024; // width per slice
-    const imgH    = 512;  // height
-    const totalW  = imgW * count;
-    const totalH  = imgH;
+    const count  = imageUrls.length;
+    const PAN_W  = 4096;
+    const PAN_H  = 2048;
 
-    // Final canvas must be 2:1 (width = 2× height) for equirectangular
-    const panW = Math.max(totalW, totalH * 2);
-    const panH = panW / 2;
-
-    const canvas = createCanvas(panW, panH);
+    const canvas = createCanvas(PAN_W, PAN_H);
     const ctx    = canvas.getContext("2d");
 
     ctx.fillStyle = "#1a1209";
-    ctx.fillRect(0, 0, panW, panH);
+    ctx.fillRect(0, 0, PAN_W, PAN_H);
 
-    const sliceW = panW / count;
+    // If we have direction metadata, place each image at its angular position.
+    // Otherwise fall back to equal-width horizontal strips.
+    if (directions && directions.length === imageUrls.length) {
+      // Sort by angle
+      const sorted = imageUrls
+        .map((url, i) => ({ url, angle: Number(directions[i]?.angle ?? i * (360 / count)) }))
+        .sort((a, b) => a.angle - b.angle);
 
-    for (let i = 0; i < count; i++) {
-      try {
-        const img = await loadImage(imageUrls[i]);
-        ctx.drawImage(img, i * sliceW, 0, sliceW, panH);
-      } catch { /* skip broken images */ }
+      for (let i = 0; i < sorted.length; i++) {
+        const { url, angle } = sorted[i];
+        const nextAngle = sorted[(i + 1) % sorted.length].angle + (i === sorted.length - 1 ? 360 : 0);
+        const gapBefore = (angle - (sorted[(i - 1 + sorted.length) % sorted.length].angle + (i === 0 ? -360 : 0) + 360)) % 360;
+        const gapAfter  = (nextAngle - angle + 360) % 360;
+
+        const startAngle = (angle - gapBefore / 2 + 360) % 360;
+        const endAngle   = (angle + gapAfter  / 2 + 360) % 360;
+        const startX     = Math.round((startAngle / 360) * PAN_W);
+        let   destW      = Math.round(((endAngle - startAngle + 360) % 360 / 360) * PAN_W);
+        if (destW <= 0) destW = Math.round(PAN_W / count);
+
+        try {
+          const img = await loadImage(url);
+          if (startX + destW <= PAN_W) {
+            ctx.drawImage(img, startX, 0, destW, PAN_H);
+          } else {
+            const part1W = PAN_W - startX;
+            const part2W = destW - part1W;
+            const frac   = part1W / destW;
+            ctx.drawImage(img, 0, 0, Math.round(img.width * frac), img.height, startX, 0, part1W, PAN_H);
+            ctx.drawImage(img, Math.round(img.width * frac), 0, img.width - Math.round(img.width * frac), img.height, 0, 0, part2W, PAN_H);
+          }
+        } catch { /* skip unloadable images */ }
+      }
+    } else {
+      // Equal-width strips fallback
+      const sliceW = PAN_W / count;
+      for (let i = 0; i < count; i++) {
+        try {
+          const img = await loadImage(imageUrls[i]);
+          ctx.drawImage(img, i * sliceW, 0, sliceW, PAN_H);
+        } catch { /* skip */ }
+      }
     }
 
-    const buffer = canvas.toBuffer("image/jpeg", { quality: 0.88 });
-    const objPath = `${propertyId}/ai-360-${uuidv4()}.jpg`;
-    const publicUrl = await uploadBufferToSupabase(
-      IMAGES_BUCKET, objPath, buffer, "image/jpeg"
-    );
+    const buffer    = canvas.toBuffer("image/jpeg", { quality: 0.88 });
+    const objPath   = `${propertyId}/panorama-360-${uuidv4()}.jpg`;
+    const publicUrl = await uploadBufferToSupabase(IMAGES_BUCKET, objPath, buffer, "image/jpeg");
     return { panoramaUrl: publicUrl, storagePath: objPath };
   } catch {
-    // canvas not available — just use the first image as a rudimentary panorama
-    // (still allows pannellum to render a 360° approximation from a flat photo)
+    // canvas not available — use first image directly; the equirectangular
+    // viewer in PanoramaViewer handles any image by scrolling it as a cylinder
     return { panoramaUrl: imageUrls[0], storagePath: null };
   }
 }
@@ -237,87 +277,164 @@ router.post("/set-link/:propertyId", requireAuth, async (req, res) => {
 
 // =============================================================================
 // POST /api/tour/generate-360/:propertyId
-// AI 360° generation from uploaded images
-//   - Accepts up to 20 images as multipart/form-data (field: "images")
-//   - OR uses already-uploaded property images if no files are sent
+// Store a 360° panorama for a property.
+//
+// Preferred flow (browser canvas pre-stitched):
+//   multipart field "panorama" — single pre-stitched 2:1 JPEG from browser
+//   multipart field "images[]" — raw source images for server-side logging
+//   body field   "directions"  — JSON string [{slot, label, angle}]
+//
+// Legacy / fallback flow (server stitches):
+//   multipart field "images[]" — raw directional images, stitched server-side
+//   body field   "directions"  — optional JSON string [{slot, label, angle}]
+//
+// Image validation (server side):
+//   • File must be JPG/PNG/WEBP (enforced by multer fileFilter)
+//   • Panorama file must be > 1 KB
+//   • At least 1 source image or 1 panorama required
 // =============================================================================
 router.post(
   "/generate-360/:propertyId",
   requireAuth,
-  aiImageUpload.array("images", 20),
+  aiImageUpload.fields([
+    { name: "panorama", maxCount: 1  },   // pre-stitched panorama from browser
+    { name: "images",   maxCount: 20 },   // raw source images (legacy or supplementary)
+  ]),
   async (req, res) => {
     try {
       const { propertyId } = req.params;
       const { ok, status, error } = await checkOwnership(propertyId, req.user.id, req.user.role);
       if (!ok) return res.status(status).json({ error });
 
-      // Mark as processing immediately
+      // Parse optional directions metadata
+      let directions = null;
+      if (req.body?.directions) {
+        try {
+          directions = JSON.parse(req.body.directions);
+          if (!Array.isArray(directions)) directions = null;
+        } catch {
+          // Malformed JSON — ignore, proceed without direction metadata
+          console.warn("[tour/generate-360] Could not parse directions metadata");
+        }
+      }
+
+      // Mark as processing
       await pool.query(
         "UPDATE nivaas_properties SET tour_ai_status = 'processing' WHERE id = ?",
         [propertyId]
       );
 
-      let imageUrls = [];
+      const files = req.files ?? {};
+      const panoramaFiles = files["panorama"] ?? [];
+      const sourceFiles   = files["images"]   ?? [];
 
-      // If files uploaded in this request — store them first
-      if (req.files && req.files.length > 0) {
-        for (const file of req.files) {
-          const ext      = path.extname(file.originalname).toLowerCase() || ".jpg";
-          const objPath  = `${propertyId}/ai-src-${uuidv4()}${ext}`;
-          const pubUrl   = await uploadBufferToSupabase(
-            IMAGES_BUCKET, objPath, file.buffer, file.mimetype
+      console.log(`[tour/generate-360] propertyId=${propertyId} panoramaFiles=${panoramaFiles.length} sourceFiles=${sourceFiles.length} panoramaSize=${panoramaFiles[0]?.size ?? 0}`);
+
+      let panoramaUrl  = null;
+      let sourceImages = [];   // public URLs of source images stored in Supabase
+
+      // ── Path A: pre-stitched panorama blob from browser canvas ────────────
+      if (panoramaFiles.length > 0) {
+        const panoFile = panoramaFiles[0];
+
+        // Basic size sanity check — reject suspiciously small files
+        if (panoFile.size < 1024) {
+          await pool.query(
+            "UPDATE nivaas_properties SET tour_ai_status = 'failed' WHERE id = ?",
+            [propertyId]
           );
-          imageUrls.push(pubUrl);
+          return res.status(400).json({ error: "Panorama file is too small — it may be corrupt" });
         }
-      } else {
-        // Fall back to existing property images
+
+        // Store the pre-stitched panorama
+        const result = await storePanorama(propertyId, panoFile.buffer, panoFile.mimetype || "image/jpeg");
+        panoramaUrl = result.panoramaUrl;
+        console.log(`[tour/generate-360] Path A — panorama stored: ${panoramaUrl}`);
+
+        // Also store source images for reference (best-effort, non-blocking)
+        for (const srcFile of sourceFiles) {
+          try {
+            const ext     = path.extname(srcFile.originalname).toLowerCase() || ".jpg";
+            const objPath = `${propertyId}/360-src-${uuidv4()}${ext}`;
+            const pubUrl  = await uploadBufferToSupabase(IMAGES_BUCKET, objPath, srcFile.buffer, srcFile.mimetype);
+            sourceImages.push(pubUrl);
+          } catch (e) {
+            console.warn("[tour/generate-360] Could not store source image:", e.message);
+          }
+        }
+      }
+
+      // ── Path B: server-side stitching (legacy / fallback) ─────────────────
+      else if (sourceFiles.length > 0) {
+        // Upload source files to Supabase first
+        for (const srcFile of sourceFiles) {
+          const ext     = path.extname(srcFile.originalname).toLowerCase() || ".jpg";
+          const objPath = `${propertyId}/360-src-${uuidv4()}${ext}`;
+          const pubUrl  = await uploadBufferToSupabase(IMAGES_BUCKET, objPath, srcFile.buffer, srcFile.mimetype);
+          sourceImages.push(pubUrl);
+        }
+        const result = await buildSimulated360(propertyId, sourceImages, directions);
+        panoramaUrl = result.panoramaUrl;
+      }
+
+      // ── Path C: use existing property images ──────────────────────────────
+      else {
         const [imgs] = await pool.query(
           "SELECT url FROM nivaas_property_images WHERE property_id = ? ORDER BY sort_order ASC LIMIT 20",
           [propertyId]
         );
-        imageUrls = imgs.map(r => r.url);
+        sourceImages = imgs.map(r => r.url);
+        if (sourceImages.length === 0) {
+          await pool.query(
+            "UPDATE nivaas_properties SET tour_ai_status = 'failed' WHERE id = ?",
+            [propertyId]
+          );
+          return res.status(400).json({
+            error: "No images available. Upload wall photos or property images first.",
+          });
+        }
+        const result = await buildSimulated360(propertyId, sourceImages, directions);
+        panoramaUrl = result.panoramaUrl;
       }
 
-      if (imageUrls.length === 0) {
+      if (!panoramaUrl) {
         await pool.query(
           "UPDATE nivaas_properties SET tour_ai_status = 'failed' WHERE id = ?",
           [propertyId]
         );
-        return res.status(400).json({
-          error: "No images available. Please upload property photos first.",
-        });
+        return res.status(500).json({ error: "Panorama generation failed — no output produced" });
       }
 
-      // Build 360° panorama
-      const { panoramaUrl } = await buildSimulated360(propertyId, imageUrls);
-
-      // Persist result
+      // Persist panorama URL and source image list
+      console.log(`[tour/generate-360] Saving to DB — propertyId=${propertyId} panoramaUrl=${panoramaUrl}`);
       await pool.query(
         `UPDATE nivaas_properties
-         SET tour_type = 'ai_generated',
-             tour_ai_panorama_url = ?,
+         SET tour_type             = 'ai_generated',
+             tour_ai_panorama_url  = ?,
              tour_ai_source_images = ?::jsonb,
-             tour_ai_status = 'done',
-             tour_model_path = NULL, tour_model_url = NULL, tour_url = NULL
+             tour_ai_status        = 'done',
+             tour_model_path       = NULL,
+             tour_model_url        = NULL,
+             tour_url              = NULL
          WHERE id = ?`,
-        [panoramaUrl, JSON.stringify(imageUrls), propertyId]
+        [panoramaUrl, JSON.stringify(sourceImages), propertyId]
       );
 
       res.json({
-        message:            "AI 360° view generated successfully",
-        tour_type:          "ai_generated",
+        message:              "360° panorama created successfully",
+        tour_type:            "ai_generated",
         tour_ai_panorama_url: panoramaUrl,
-        tour_ai_status:     "done",
-        source_images:      imageUrls,
+        tour_ai_status:       "done",
+        source_images:        sourceImages,
       });
     } catch (err) {
       console.error("[tour/generate-360]", err.message);
-      // Mark as failed
+      // Mark as failed — do not expose internal error detail to client
       await pool.query(
         "UPDATE nivaas_properties SET tour_ai_status = 'failed' WHERE id = ?",
         [req.params.propertyId]
       ).catch(() => {});
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: "Panorama generation failed. Please retry." });
     }
   }
 );

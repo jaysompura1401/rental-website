@@ -31,27 +31,27 @@ export interface PropertyScoreResult {
 }
 
 export interface QualityInput {
-  title?: string;
-  property_type?: string;
-  listing_type?: string;
-  bedrooms?: number | string;
-  bathrooms?: number | string;
-  area_sqft?: number | string;
-  furnished?: string;
-  amenities?: string[] | { name: string }[];
-  city?: string;
-  locality?: string;
-  address?: string;
-  latitude?: number | string;
-  longitude?: number | string;
-  map_url?: string;
-  price?: number | string;
+  title?: string | null;
+  property_type?: string | null;
+  listing_type?: string | null;
+  bedrooms?: number | string | null;
+  bathrooms?: number | string | null;
+  area_sqft?: number | string | null;
+  furnished?: string | null;
+  amenities?: (string | { name: string })[] | null;
+  city?: string | null;
+  locality?: string | null;
+  address?: string | null;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
+  map_url?: string | null;
+  price?: number | string | null;
   deposit?: number | string | null;
-  description?: string;
-  notes?: string;
-  imagesCount?: number;
-  images?: unknown[];
-  verified?: boolean;
+  description?: string | null;
+  notes?: string | null;
+  imagesCount?: number | null;
+  images?: unknown[] | null;
+  verified?: boolean | number | null;
 }
 
 /**

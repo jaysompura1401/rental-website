@@ -673,4 +673,601 @@ router.get("/nominatim-search", async (req, res) => {
   });
 });
 
+// ─── Clean JSON GET helper for Google APIs ────────────────────────────────────
+// Unlike the main httpGet (which uses text/html + redirect-following for Maps URLs),
+// this helper is purpose-built for Google's REST JSON APIs. It sends a proper
+// Accept: application/json header, does NOT follow HTML redirects, and returns
+// the parsed JSON body directly.
+function googleJsonGet(url) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        path:     parsed.pathname + parsed.search,
+        method:   "GET",
+        headers: {
+          "Accept":       "application/json",
+          "User-Agent":   "Nivaas/1.0 (nivaas.in; contact@nivaas.in)",
+          "Connection":   "close",
+        },
+      },
+      (resp) => {
+        let raw = "";
+        resp.on("data", (c) => { raw += c; });
+        resp.on("end", () => {
+          if (resp.statusCode && resp.statusCode >= 400) {
+            // Try to parse error body from Google
+            try {
+              const errBody = JSON.parse(raw);
+              return resolve(errBody); // let the caller handle status field
+            } catch { /* ignore */ }
+            return reject(new Error(`Google API HTTP ${resp.statusCode}`));
+          }
+          try {
+            resolve(JSON.parse(raw));
+          } catch (e) {
+            reject(new Error("Invalid JSON from Google API: " + raw.slice(0, 200)));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.setTimeout(12000, () => {
+      req.destroy();
+      reject(new Error("Google API request timed out"));
+    });
+    req.end();
+  });
+}
+
+// ─── Helper: POST to Places API (New) ────────────────────────────────────────
+// Uses X-Goog-Api-Key header (server-to-server — no HTTP Referrer restriction applies).
+// The key needs "Places API (New)" enabled in Google Cloud Console.
+function placesNewPost(path, body, apiKey, fieldMask) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = https.request(
+      {
+        hostname: "places.googleapis.com",
+        path,
+        method:   "POST",
+        headers: {
+          "Content-Type":    "application/json",
+          "Content-Length":  Buffer.byteLength(payload),
+          "X-Goog-Api-Key":  apiKey,
+          "X-Goog-FieldMask": fieldMask,
+          "Accept":          "application/json",
+          "Connection":      "close",
+        },
+      },
+      (resp) => {
+        let raw = "";
+        resp.on("data", (c) => { raw += c; });
+        resp.on("end", () => {
+          try {
+            const parsed = JSON.parse(raw);
+            if (resp.statusCode && resp.statusCode >= 400) {
+              return resolve({ _httpStatus: resp.statusCode, ...parsed });
+            }
+            resolve(parsed);
+          } catch (e) {
+            reject(new Error("Invalid JSON from Places API (New): " + raw.slice(0, 200)));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.setTimeout(12000, () => {
+      req.destroy();
+      reject(new Error("Places API (New) request timed out"));
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ─── Nominatim helper ─────────────────────────────────────────────────────────
+// OpenStreetMap Nominatim — free, no API key required, India-aware.
+// Rate limit: 1 req/s per IP (server-side calls consolidate many users into one
+// server IP, so we keep a lightweight token-bucket at ~2 req/s to stay safe).
+let _nominatimLastCall = 0;
+function nominatimThrottle() {
+  const now = Date.now();
+  const gap  = 520; // ~2 req/s
+  const wait = Math.max(0, gap - (now - _nominatimLastCall));
+  _nominatimLastCall = now + wait;
+  return new Promise(r => setTimeout(r, wait));
+}
+
+function nominatimGet(path) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL("https://nominatim.openstreetmap.org" + path);
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        path:     parsed.pathname + parsed.search,
+        method:   "GET",
+        headers: {
+          "Accept":          "application/json",
+          // Nominatim ToS requires a valid User-Agent & Referer identifying your app
+          "User-Agent":      "Nivaas/1.0 (nivaas.in; contact@nivaas.in)",
+          "Referer":         "https://nivaas.in/",
+          "Accept-Language": "en",
+          "Connection":      "close",
+        },
+      },
+      (resp) => {
+        let raw = "";
+        resp.on("data", c => { raw += c; });
+        resp.on("end", () => {
+          if (resp.statusCode && resp.statusCode >= 400) {
+            return reject(new Error(`Nominatim HTTP ${resp.statusCode}`));
+          }
+          try { resolve(JSON.parse(raw)); }
+          catch { reject(new Error("Invalid JSON from Nominatim")); }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error("Nominatim request timed out")); });
+    req.end();
+  });
+}
+
+// Parse a Nominatim result into our standard PlaceDetails shape
+function nominatimToDetails(r) {
+  const addr  = r.address || {};
+  const city  = addr.city || addr.town || addr.village || addr.county || addr.state_district || "";
+  const locality = addr.suburb || addr.neighbourhood || addr.quarter || addr.hamlet || "";
+  const pincode  = addr.postcode || "";
+  const state    = addr.state || "";
+  const country  = addr.country || "";
+
+  // Build a clean formatted_address from display_name
+  const formatted_address = r.display_name || "";
+
+  return {
+    place_id:          `osm:${r.osm_type}:${r.osm_id}`,
+    formatted_address,
+    lat:               parseFloat(r.lat),
+    lng:               parseFloat(r.lon),
+    city, locality, pincode, state, country,
+  };
+}
+
+// ─── GET /api/maps/places-autocomplete ───────────────────────────────────────
+// Search-as-you-type address autocomplete.
+// Priority order:
+//   1. Nominatim /search  — free, no key, works everywhere
+//   2. Places API (New)   — if Google key is present and has the API enabled
+//   3. Legacy Places API  — last resort Google fallback
+//
+// Query params:
+//   input        – required, the search text (min 2 chars)
+//   sessiontoken – optional, billing session grouping (Google paths only)
+//
+// Response: { status, predictions: [{ place_id, description, structured_formatting }] }
+router.get("/places-autocomplete", async (req, res) => {
+  const { input } = req.query;
+  if (!input || typeof input !== "string" || input.trim().length < 2) {
+    return res.status(400).json({ error: "input is required (min 2 characters)" });
+  }
+
+  const query = input.trim();
+
+  // ── Path 1: Nominatim (primary — no API key needed) ───────────────────────
+  try {
+    await nominatimThrottle();
+    const params = new URLSearchParams({
+      q:              query,
+      format:         "jsonv2",
+      addressdetails: "1",
+      limit:          "8",
+      countrycodes:   "in",
+      "accept-language": "en",
+    });
+
+    const results = await nominatimGet(`/search?${params.toString()}`);
+
+    if (Array.isArray(results) && results.length > 0) {
+      const predictions = results.map(r => {
+        // Build main_text / secondary_text from display_name parts
+        const parts = (r.display_name || "").split(",").map(s => s.trim()).filter(Boolean);
+        const mainText      = parts[0] || r.display_name || "";
+        const secondaryText = parts.slice(1).join(", ");
+        return {
+          place_id:              `osm:${r.osm_type}:${r.osm_id}`,
+          description:           r.display_name,
+          structured_formatting: { main_text: mainText, secondary_text: secondaryText },
+          types:                 [r.type || r.category || "place"],
+          // Embed lat/lng so place-details can skip a second fetch
+          _lat: r.lat,
+          _lng: r.lon,
+          _address: r,
+        };
+      });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ status: "OK", predictions, source: "nominatim" });
+    }
+
+    // Nominatim returned empty — fall through to Google
+    console.info("[places-autocomplete] Nominatim returned 0 results, trying Google");
+  } catch (nomErr) {
+    console.warn("[places-autocomplete] Nominatim failed:", nomErr.message, "– trying Google");
+  }
+
+  // ── Path 2 & 3: Google APIs (fallback — need enabled key) ─────────────────
+  const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  if (!GOOGLE_KEY) {
+    return res.status(503).json({ error: "No results found and no Google Maps API key configured" });
+  }
+
+  const { sessiontoken } = req.query;
+
+  // Places API (New)
+  try {
+    const reqBody = {
+      input:                   query,
+      languageCode:            "en",
+      includedRegionCodes:     ["IN"],
+      includeQueryPredictions: false,
+    };
+    if (sessiontoken) reqBody.sessionToken = String(sessiontoken);
+
+    const body = await placesNewPost(
+      "/v1/places:autocomplete",
+      reqBody,
+      GOOGLE_KEY,
+      "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat"
+    );
+
+    if (body._httpStatus && (body._httpStatus === 403 || body._httpStatus === 400)) {
+      throw new Error("Places API (New) not available: " + (body.error?.message || body._httpStatus));
+    }
+
+    if (body.suggestions && Array.isArray(body.suggestions)) {
+      const predictions = body.suggestions
+        .filter(s => s.placePrediction)
+        .map(s => {
+          const p = s.placePrediction;
+          const mainText      = p.structuredFormat?.mainText?.text      || p.text?.text?.split(",")[0] || "";
+          const secondaryText = p.structuredFormat?.secondaryText?.text || p.text?.text?.split(",").slice(1).join(",").trim() || "";
+          return {
+            place_id:              p.placeId,
+            description:           p.text?.text || mainText,
+            structured_formatting: { main_text: mainText, secondary_text: secondaryText },
+            types:                 [],
+          };
+        });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ status: predictions.length > 0 ? "OK" : "ZERO_RESULTS", predictions, source: "google-new" });
+    }
+    throw new Error("Unexpected Places API (New) response shape");
+  } catch (newApiErr) {
+    console.warn("[places-autocomplete] Places API (New) failed:", newApiErr.message, "– trying legacy");
+  }
+
+  // Legacy Places Autocomplete API
+  try {
+    const params = new URLSearchParams({ input: query, key: GOOGLE_KEY, language: "en", components: "country:in" });
+    if (sessiontoken) params.set("sessiontoken", String(sessiontoken));
+
+    const body = await googleJsonGet(`https://maps.googleapis.com/maps/api/place/autocomplete/json?${params.toString()}`);
+
+    if (body.status === "REQUEST_DENIED") {
+      console.error("[places-autocomplete] Legacy REQUEST_DENIED:", body.error_message);
+      // Both Google paths denied — return empty rather than error so the
+      // client JS-API fallback can still try
+      return res.status(200).json({ status: "ZERO_RESULTS", predictions: [], source: "none" });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      status:      body.status || "ZERO_RESULTS",
+      predictions: (body.predictions || []).map(p => ({
+        place_id:              p.place_id,
+        description:           p.description,
+        structured_formatting: p.structured_formatting,
+        types:                 p.types,
+      })),
+      source: "google-legacy",
+    });
+  } catch (err) {
+    console.error("[maps/places-autocomplete] all paths failed:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/maps/place-details ─────────────────────────────────────────────
+// Returns full details (lat/lng + address breakdown) for a place_id.
+//
+// Supports two place_id formats:
+//   • "osm:<type>:<id>"  — returned by Nominatim path above, resolved via
+//                           Nominatim /lookup (no API key needed)
+//   • anything else      — treated as a Google place_id, tried against
+//                           Places API (New) then legacy Places Details API
+//
+// Query params:
+//   place_id     – required
+//   sessiontoken – optional (Google billing only)
+//   lat / lng    – optional shortcut: if present AND place_id is osm:*, skip
+//                  the Nominatim lookup and return the coords immediately
+//
+// Response: { place_id, formatted_address, lat, lng, city, locality, pincode, state, country }
+router.get("/place-details", async (req, res) => {
+  const { place_id, sessiontoken } = req.query;
+  if (!place_id || typeof place_id !== "string") {
+    return res.status(400).json({ error: "place_id is required" });
+  }
+
+  // Helper to extract address components from Google-style comps array
+  const extractFromComponents = (comps) => {
+    const getComp = (...types) => {
+      for (const type of types) {
+        const found = comps.find(c => c.types.includes(type));
+        if (found) return found.long_name;
+      }
+      return "";
+    };
+    return {
+      city:     getComp("locality", "administrative_area_level_3", "administrative_area_level_2"),
+      locality: getComp("sublocality_level_1", "sublocality", "neighborhood"),
+      pincode:  getComp("postal_code"),
+      state:    getComp("administrative_area_level_1"),
+      country:  getComp("country"),
+    };
+  };
+
+  // ── Path 1: Nominatim OSM place_id ───────────────────────────────────────
+  // Format: "osm:<type>:<id>"  e.g. "osm:way:123456789"
+  if (place_id.startsWith("osm:")) {
+    // If the autocomplete response already embedded lat/lng, use them directly
+    const quickLat = parseFloat(req.query.lat);
+    const quickLng = parseFloat(req.query.lng);
+
+    // Optimistic path: lat & lng were passed in query (client cached from autocomplete)
+    // — just re-fetch Nominatim to get full address breakdown
+    try {
+      await nominatimThrottle();
+      const parts   = place_id.split(":"); // ["osm", type, id]
+      const osmType = parts[1]; // "node" | "way" | "relation"
+      const osmId   = parts[2];
+
+      // Single-letter osm_type for /lookup: N, W, R
+      const typeChar = { node: "N", way: "W", relation: "R" }[osmType] || "W";
+
+      const params = new URLSearchParams({
+        osm_ids:        `${typeChar}${osmId}`,
+        format:         "jsonv2",
+        addressdetails: "1",
+        "accept-language": "en",
+      });
+
+      const results = await nominatimGet(`/lookup?${params.toString()}`);
+
+      if (Array.isArray(results) && results.length > 0) {
+        const details = nominatimToDetails(results[0]);
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        return res.json(details);
+      }
+
+      // Lookup returned empty — if we have coords from query use them
+      if (!isNaN(quickLat) && !isNaN(quickLng)) {
+        return res.json({
+          place_id,
+          formatted_address: "",
+          lat: quickLat, lng: quickLng,
+          city: "", locality: "", pincode: "", state: "", country: "",
+        });
+      }
+
+      return res.status(404).json({ error: "OSM place not found" });
+    } catch (osmErr) {
+      console.warn("[place-details] Nominatim lookup failed:", osmErr.message);
+      if (!isNaN(quickLat) && !isNaN(quickLng)) {
+        return res.json({
+          place_id,
+          formatted_address: "",
+          lat: quickLat, lng: quickLng,
+          city: "", locality: "", pincode: "", state: "", country: "",
+        });
+      }
+      return res.status(500).json({ error: osmErr.message });
+    }
+  }
+
+  // ── Path 2 & 3: Google place_id ───────────────────────────────────────────
+  const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  if (!GOOGLE_KEY) {
+    return res.status(503).json({ error: "Google Maps API key not configured on the server" });
+  }
+
+  // Places API (New) — GET /v1/places/{placeId}
+  try {
+    const detailsResult = await new Promise((resolve, reject) => {
+      const r = https.request(
+        {
+          hostname: "places.googleapis.com",
+          path:     `/v1/places/${encodeURIComponent(place_id.trim())}?languageCode=en`,
+          method:   "GET",
+          headers: {
+            "X-Goog-Api-Key":   GOOGLE_KEY,
+            "X-Goog-FieldMask": "id,formattedAddress,addressComponents,location,displayName",
+            "Accept":           "application/json",
+            "Connection":       "close",
+          },
+        },
+        (resp) => {
+          let raw = "";
+          resp.on("data", c => { raw += c; });
+          resp.on("end", () => {
+            try {
+              const parsed = JSON.parse(raw);
+              if (resp.statusCode && resp.statusCode >= 400) return resolve({ _httpStatus: resp.statusCode, ...parsed });
+              resolve(parsed);
+            } catch (e) {
+              reject(new Error("Invalid JSON from Places API (New) details: " + raw.slice(0, 200)));
+            }
+          });
+        }
+      );
+      r.on("error", reject);
+      r.setTimeout(12000, () => { r.destroy(); reject(new Error("Timed out")); });
+      r.end();
+    });
+
+    if (!detailsResult._httpStatus && detailsResult.location) {
+      const comps = (detailsResult.addressComponents || []).map(c => ({
+        long_name:  c.longText || "",
+        short_name: c.shortText || "",
+        types:      c.types || [],
+      }));
+      const { city, locality, pincode, state, country } = extractFromComponents(comps);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      return res.json({
+        place_id:          detailsResult.id || place_id,
+        formatted_address: detailsResult.formattedAddress || "",
+        lat: detailsResult.location?.latitude ?? null,
+        lng: detailsResult.location?.longitude ?? null,
+        city, locality, pincode, state, country,
+        address_components: comps,
+      });
+    }
+
+    if (detailsResult._httpStatus === 403 || detailsResult._httpStatus === 400) {
+      throw new Error("Places API (New) details not available: " + (detailsResult.error?.message || detailsResult._httpStatus));
+    }
+  } catch (newErr) {
+    console.warn("[place-details] Places API (New) failed:", newErr.message, "– trying legacy");
+  }
+
+  // Legacy Places Details API
+  try {
+    const params = new URLSearchParams({
+      place_id:  place_id.trim(),
+      key:       GOOGLE_KEY,
+      language:  "en",
+      fields:    "place_id,formatted_address,address_components,geometry",
+    });
+    if (sessiontoken) params.set("sessiontoken", String(sessiontoken));
+
+    const body = await googleJsonGet(`https://maps.googleapis.com/maps/api/place/details/json?${params.toString()}`);
+
+    if (body.status === "REQUEST_DENIED") {
+      console.error("[place-details] Legacy REQUEST_DENIED:", body.error_message);
+      return res.status(403).json({ error: "Google Places API request denied", message: body.error_message });
+    }
+
+    if (body.status !== "OK" || !body.result) {
+      return res.status(404).json({ error: `Place not found: ${body.status}` });
+    }
+
+    const r     = body.result;
+    const comps = r.address_components || [];
+    const { city, locality, pincode, state, country } = extractFromComponents(comps);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.json({
+      place_id:          r.place_id,
+      formatted_address: r.formatted_address,
+      lat: r.geometry?.location?.lat ?? null,
+      lng: r.geometry?.location?.lng ?? null,
+      city, locality, pincode, state, country,
+      address_components: comps,
+    });
+  } catch (err) {
+    console.error("[maps/place-details] all paths failed:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/maps/reverse-geocode ───────────────────────────────────────────
+// Reverse geocoding: lat/lng → address details.
+// Uses Nominatim first (free, no key), falls back to Google Geocoding API.
+//
+// Query params:
+//   lat – required
+//   lng – required
+//
+// Response: { formatted_address, lat, lng, city, locality, pincode, state, country, place_id }
+router.get("/reverse-geocode", async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  if (isNaN(lat) || isNaN(lng)) {
+    return res.status(400).json({ error: "lat and lng are required and must be numbers" });
+  }
+
+  // ── Path 1: Nominatim reverse geocode (no API key needed) ─────────────────
+  try {
+    await nominatimThrottle();
+    const params = new URLSearchParams({
+      lat:            String(lat),
+      lon:            String(lng),
+      format:         "jsonv2",
+      addressdetails: "1",
+      zoom:           "18",
+      "accept-language": "en",
+    });
+
+    const result = await nominatimGet(`/reverse?${params.toString()}`);
+
+    if (result && result.display_name) {
+      const details = nominatimToDetails(result);
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.json({ ...details, lat, lng });
+    }
+  } catch (nomErr) {
+    console.warn("[reverse-geocode] Nominatim failed:", nomErr.message, "– trying Google");
+  }
+
+  // ── Path 2: Google Geocoding API (fallback) ────────────────────────────────
+  const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  if (!GOOGLE_KEY) {
+    return res.status(503).json({ error: "Reverse geocode unavailable — no Google Maps API key configured" });
+  }
+
+  const params = new URLSearchParams({ latlng: `${lat},${lng}`, key: GOOGLE_KEY, language: "en" });
+
+  try {
+    const body = await googleJsonGet(`https://maps.googleapis.com/maps/api/geocode/json?${params.toString()}`);
+
+    if (body.status === "REQUEST_DENIED") {
+      return res.status(403).json({ error: "Google Geocoding API request denied", message: body.error_message });
+    }
+
+    if (body.status !== "OK" || !body.results || body.results.length === 0) {
+      return res.status(404).json({ error: `Geocoding failed: ${body.status}` });
+    }
+
+    const result = body.results.find(r =>
+      r.types?.some(t => ["street_address", "premise", "establishment", "route"].includes(t))
+    ) || body.results[0];
+
+    const comps = result.address_components || [];
+    const getComp = (...types) => {
+      for (const type of types) {
+        const found = comps.find(c => c.types.includes(type));
+        if (found) return found.long_name;
+      }
+      return "";
+    };
+
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.json({
+      place_id:          result.place_id || "",
+      formatted_address: result.formatted_address || "",
+      lat:               result.geometry?.location?.lat ?? lat,
+      lng:               result.geometry?.location?.lng ?? lng,
+      city:     getComp("locality", "administrative_area_level_3", "administrative_area_level_2"),
+      locality: getComp("sublocality_level_1", "sublocality", "neighborhood"),
+      pincode:  getComp("postal_code"),
+      state:    getComp("administrative_area_level_1"),
+      country:  getComp("country"),
+    });
+  } catch (err) {
+    console.error("[maps/reverse-geocode]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

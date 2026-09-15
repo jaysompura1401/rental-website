@@ -10,7 +10,6 @@ import { useRecentlyViewed } from "@/hooks/useRecentlyViewed";
 import type { ViewedProperty } from "@/lib/view-history";
 import {
   hasExistingChoice,
-  setJustScrolling,
   saveRequirements,
   type CustomerRequirements,
 } from "@/lib/requirement-match";
@@ -359,27 +358,21 @@ function Home() {
   // View All Cities Modal state
   const [showCitiesModal, setShowCitiesModal] = useState(false);
 
-  // ── Requirement wizard — show 3.5s after homepage loads, only once per session ──
+  // ── Requirement wizard — show 3.5s after page load, for ALL users, once per session ──
   const [showWizard, setShowWizard] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // Priority 1: new customer just logged in — show immediately (1s delay)
-    if (sessionStorage.getItem("nivaas_show_wizard_for_new_customer")) {
-      sessionStorage.removeItem("nivaas_show_wizard_for_new_customer");
-      sessionStorage.setItem("nivaas_wizard_shown", "1");
-      const t = setTimeout(() => setShowWizard(true), 1000);
-      return () => clearTimeout(t);
-    }
-
-    // Priority 2: first-time visitor — show after 3.5s once per session
+    // Already shown this session or user already made a choice — skip
     if (sessionStorage.getItem("nivaas_wizard_shown")) return;
     if (hasExistingChoice()) return;
 
+    // Show for everyone (guests + logged-in) after 3.5s
     const t = setTimeout(() => {
       setShowWizard(true);
       sessionStorage.setItem("nivaas_wizard_shown", "1");
     }, 3500);
+
     return () => clearTimeout(t);
   }, []);
 
@@ -565,23 +558,15 @@ function Home() {
     <div className="min-h-screen flex flex-col font-sans" style={{ backgroundColor: BG }}>
       <Navbar />
 
-      {/* ── Requirement wizard — fires 4.5s after load on first visit ─────── */}
+      {/* ── Requirement wizard — fires 3.5s after load on first visit ─────── */}
       {showWizard && (
         <RequirementWizard
           onComplete={(req: CustomerRequirements) => {
             saveRequirements(req);
             setShowWizard(false);
-            // Navigate to personalised results
             window.location.href = "/properties";
           }}
-          onSkip={() => {
-            setJustScrolling();
-            setShowWizard(false);
-          }}
-          onClose={() => {
-            setJustScrolling();
-            setShowWizard(false);
-          }}
+          onClose={() => setShowWizard(false)}
         />
       )}
 

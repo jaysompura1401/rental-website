@@ -325,12 +325,12 @@ function PropertiesList() {
       {/* ── Requirement wizard modal ─────────────────────────────────────── */}
       {showWizard && (
         <RequirementWizard
-          onComplete={handleWizardComplete}
-          onSkip={handleWizardSkip}
-          onClose={() => {
-            setJustScrolling();
+          onComplete={(newReq) => {
+            setRequirements(newReq);
+            setSortMode("match");
             setShowWizard(false);
           }}
+          onClose={() => setShowWizard(false)}
         />
       )}
 

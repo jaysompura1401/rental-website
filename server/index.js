@@ -61,6 +61,7 @@ import aiRouter                from "./routes/ai.js";
 import tourRouter                from "./routes/tour.js";
 import recommendationsRouter    from "./routes/recommendations.js";
 import nearbyRouter             from "./routes/nearby.js";
+import leadsRouter              from "./routes/leads.js";
 
 app.use("/api/auth",          authRouter);
 app.use("/api/properties",    propertiesRouter);
@@ -84,6 +85,7 @@ app.use("/api/ai",                  aiRouter);
 app.use("/api/tour",                tourRouter);
 app.use("/api/recommendations",     recommendationsRouter);
 app.use("/api/nearby",              nearbyRouter);
+app.use("/api/leads",               leadsRouter);
 
 // Health check
 app.get("/api/health", (_req, res) => {

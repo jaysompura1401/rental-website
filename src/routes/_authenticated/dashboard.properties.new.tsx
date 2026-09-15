@@ -13,7 +13,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { properties as propertiesApi, uploadImages, aiApi, tourApi, type ApiPropertyImage } from "@/lib/api";
+import { properties as propertiesApi, uploadImages, aiApi, tourApi, type ApiPropertyImage, API_BASE } from "@/lib/api";
 import { AI360Generator, type TourFormState } from "@/components/property/AI360Generator";
 import { cities, propertyTypes } from "@/lib/mock-properties";
 import { fetchProfile, type CachedProfile } from "@/lib/auth-cache";
@@ -295,6 +295,8 @@ interface FormState {
   price: string; deposit: string;
   latitude: string; longitude: string;
   map_url: string;
+  google_place_id: string;
+  location_locked: boolean;
   entrance_direction: string;
   kitchen_location: string;
   master_bedroom_location: string;
@@ -308,6 +310,7 @@ const INITIAL: FormState = {
   house_number: "", building_name: "", wing: "", landmark: "", pincode: "",
   price: "", deposit: "",
   latitude: "", longitude: "", map_url: "",
+  google_place_id: "", location_locked: false,
   entrance_direction: "North-East",
   kitchen_location: "South-East",
   master_bedroom_location: "South-West",
@@ -367,35 +370,105 @@ const MAX_IMAGES = 10;
 
 import { cityCoords } from "@/lib/mock-properties";
 
-// ─── LocationSearch — text input with smart dropdown, no map rendered ─────────
-// Searches Nominatim for matching places, shows a dropdown like Google Maps
-// autocomplete. User selects → exact lat/lng stored. No map view shown.
+// ─── GooglePlacesSearch — Location Autocomplete ──────────────────────────────
+// Architecture (2-layer fallback, all with AbortController timeouts):
+//   1. Server-side proxy  → /api/maps/places-autocomplete
+//        Primary:  OpenStreetMap Nominatim  (free, no API key, India-aware)
+//        Fallback: Google Places API (New) → legacy Places API  (if key has them enabled)
+//   2. Google Maps JS API → AutocompleteService  (browser-side, only if GMAPS_KEY works)
+//   3. Use Current Location → /api/maps/reverse-geocode  (Nominatim reverse, no key needed)
+//
+// When the proxy returns an osm:* place_id the embedded lat/lng from the
+// autocomplete response is forwarded to /api/maps/place-details so only one
+// network round-trip is needed instead of two.
 
-interface LocationSuggestion {
-  lat: string;
-  lng: string;
-  name: string;
-  fullAddress: string;
+const GMAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || "";
+
+// ── Fetch helper with timeout ──────────────────────────────────────────────
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function LocationSearch({
-  value, lat, lng, city,
-  onChange,
+// Load the Google Maps JS API once (returns a promise that resolves when ready)
+let gmapsLoadPromise: Promise<void> | null = null;
+function loadGoogleMapsApi(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  const g = window as unknown as { google?: { maps?: { places?: unknown } } };
+  if (g.google?.maps?.places) return Promise.resolve();
+  if (gmapsLoadPromise) return gmapsLoadPromise;
+  gmapsLoadPromise = new Promise((resolve, reject) => {
+    if (!GMAPS_KEY) { reject(new Error("No API key")); return; }
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GMAPS_KEY}&libraries=places&language=en`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      gmapsLoadPromise = null; // allow retry
+      reject(new Error("Failed to load Google Maps API"));
+    };
+    document.head.appendChild(script);
+  });
+  return gmapsLoadPromise;
+}
+
+interface PlaceSuggestion {
+  place_id: string;
+  description: string;
+  main_text: string;
+  secondary_text: string;
+  /** Embedded coords from Nominatim — avoids a second place-details round-trip */
+  _lat?: string;
+  _lng?: string;
+}
+
+interface PlaceDetails {
+  place_id: string;
+  formatted_address: string;
+  lat: number;
+  lng: number;
+  city: string;
+  locality: string;
+  pincode: string;
+  state?: string;
+  country?: string;
+}
+
+function GooglePlacesSearch({
+  value,
+  lat,
+  lng,
+  onLocationSelected,
+  onClear,
 }: {
   value: string;
   lat: string;
   lng: string;
-  city: string;
-  onChange: (lat: string, lng: string, display: string) => void;
+  onLocationSelected: (details: PlaceDetails) => void;
+  onClear: () => void;
 }) {
-  const [query, setQuery]           = useState(value);
-  const [results, setResults]       = useState<LocationSuggestion[]>([]);
-  const [open, setOpen]             = useState(false);
-  const [loading, setLoading]       = useState(false);
-  const containerRef                = useRef<HTMLDivElement>(null);
-  const debounceRef                 = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [query, setQuery]               = useState(value);
+  const [suggestions, setSuggestions]   = useState<PlaceSuggestion[]>([]);
+  const [open, setOpen]                 = useState(false);
+  const [loading, setLoading]           = useState(false);
+  const [fetchingDetails, setFetchingDetails] = useState(false);
+  const [gpsLoading, setGpsLoading]     = useState(false);
+  const [searchError, setSearchError]   = useState<string | null>(null);
+  const containerRef                    = useRef<HTMLDivElement>(null);
+  const inputRef                        = useRef<HTMLInputElement>(null);
+  const debounceRef                     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionTokenRef                 = useRef<string>(crypto.randomUUID());
+  const acServiceRef                    = useRef<google.maps.places.AutocompleteService | null>(null);
+  const placesServiceRef                = useRef<google.maps.places.PlacesService | null>(null);
+  const dummyMapRef                     = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
+  // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -406,127 +479,462 @@ function LocationSearch({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const search = async (q: string) => {
-    if (!q.trim() || q.trim().length < 2) { setResults([]); setOpen(false); return; }
-    setLoading(true);
-    try {
-      // Build queries: specific first, then broader
-      const terms = [
-        city ? `${q.trim()}, ${city}, India` : `${q.trim()}, India`,
-        city ? `${q.trim()}, ${city}` : q.trim(),
-        q.trim(),
-      ];
-      const seen  = new Set<string>();
-      const items: LocationSuggestion[] = [];
+  // Pre-load Google Maps API in background so JS-API fallback is instant
+  useEffect(() => {
+    if (GMAPS_KEY) loadGoogleMapsApi().catch(() => {});
+  }, []);
 
-      for (const term of terms) {
-        if (items.length >= 8) break;
-        try {
-          const res  = await fetch(
-            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(term)}&format=json&limit=5&addressdetails=1&countrycodes=in`,
-            { headers: { "Accept-Language": "en" } }
-          );
-          const data = await res.json();
-          for (const r of data) {
-            const key = `${parseFloat(r.lat).toFixed(4)},${parseFloat(r.lon).toFixed(4)}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const name =
-              r.name ||
-              r.address?.building ||
-              r.address?.amenity ||
-              r.address?.road ||
-              r.address?.suburb ||
-              r.display_name.split(",")[0];
-            items.push({ lat: r.lat, lng: r.lon, name, fullAddress: r.display_name });
-          }
-        } catch { /* continue */ }
-      }
-
-      setResults(items);
-      setOpen(items.length > 0);
-    } finally {
-      setLoading(false);
+  // ── Path 1: Server-side proxy (Nominatim primary, Google fallback) ──────────
+  const fetchViaProxy = async (input: string): Promise<PlaceSuggestion[]> => {
+    const params = new URLSearchParams({
+      input:        input.trim(),
+      sessiontoken: sessionTokenRef.current,
+    });
+    const res = await fetchWithTimeout(
+      `${API_BASE}/maps/places-autocomplete?${params.toString()}`,
+      {},
+      10_000
+    );
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.message || errBody.error || `Server error ${res.status}`);
     }
+    const data = await res.json();
+    if (!data.predictions || !Array.isArray(data.predictions)) {
+      throw new Error("Unexpected response from server");
+    }
+    if (data.status === "ZERO_RESULTS") return [];
+    return data.predictions.map((p: {
+      place_id: string;
+      description: string;
+      structured_formatting?: { main_text?: string; secondary_text?: string };
+      _lat?: string;
+      _lng?: string;
+    }) => ({
+      place_id:       p.place_id,
+      description:    p.description,
+      main_text:      p.structured_formatting?.main_text    || p.description.split(",")[0],
+      secondary_text: p.structured_formatting?.secondary_text || p.description.split(",").slice(1).join(",").trim(),
+      _lat:           p._lat,
+      _lng:           p._lng,
+    }));
+  };
+
+  // ── Path 2: Google Maps JS API (browser-side, has referrer) ──────────────
+  const fetchViaJsApi = async (input: string): Promise<PlaceSuggestion[]> => {
+    if (!GMAPS_KEY) throw new Error("No API key for JS fallback");
+    await Promise.race([
+      loadGoogleMapsApi(),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("JS API load timeout")), 8_000)),
+    ]);
+    if (!acServiceRef.current) {
+      acServiceRef.current = new google.maps.places.AutocompleteService();
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("AutocompleteService timeout")), 8_000);
+      acServiceRef.current!.getPlacePredictions(
+        { input: input.trim(), componentRestrictions: { country: "in" } },
+        (predictions, status) => {
+          clearTimeout(timer);
+          if (status === google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+            resolve([]);
+            return;
+          }
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !predictions) {
+            reject(new Error(`AutocompleteService status: ${status}`));
+            return;
+          }
+          resolve(predictions.map(p => ({
+            place_id:       p.place_id,
+            description:    p.description,
+            main_text:      p.structured_formatting.main_text,
+            secondary_text: p.structured_formatting.secondary_text || "",
+          })));
+        }
+      );
+    });
+  };
+
+  const fetchSuggestions = async (input: string) => {
+    if (!input.trim() || input.trim().length < 2) {
+      setSuggestions([]);
+      setOpen(false);
+      return;
+    }
+    setLoading(true);
+    setSearchError(null);
+    let items: PlaceSuggestion[] = [];
+    let lastError = "";
+
+    // ── Try proxy first (Nominatim → Google fallback on server) ───────────
+    try {
+      items = await fetchViaProxy(input);
+    } catch (proxyErr: unknown) {
+      const msg = proxyErr instanceof Error ? proxyErr.message : String(proxyErr);
+      console.warn("[GooglePlacesSearch] proxy failed:", msg, "→ trying JS API");
+      lastError = msg;
+
+      // ── Fallback: Google Maps JS API (browser-side) ─────────────────────
+      try {
+        items = await fetchViaJsApi(input);
+        lastError = "";
+      } catch (jsErr: unknown) {
+        const jsmsg = jsErr instanceof Error ? jsErr.message : String(jsErr);
+        console.error("[GooglePlacesSearch] JS API also failed:", jsmsg);
+        lastError = jsmsg;
+      }
+    }
+
+    if (items.length > 0) {
+      setSuggestions(items);
+      setOpen(true);
+      setSearchError(null);
+    } else if (lastError) {
+      // Only show "timed out" when both proxy AND JS API threw — not for ZERO_RESULTS
+      const isTimeout = lastError.toLowerCase().includes("timeout") || lastError.includes("abort");
+      setSearchError(
+        isTimeout
+          ? "Search timed out. Check your connection and try again."
+          : "Search unavailable right now. Please try again."
+      );
+      setSuggestions([]);
+      setOpen(false);
+    } else {
+      // ZERO_RESULTS from all paths — friendly empty state
+      setSuggestions([]);
+      setOpen(false);
+      setSearchError(`No results found for "${input.trim()}". Try a different search.`);
+    }
+
+    setLoading(false);
+  };
+
+  // ── Place details: proxy first, JS API fallback ────────────────────────────
+  const fetchPlaceDetails = async (placeId: string, hint?: { lat?: string; lng?: string }): Promise<PlaceDetails> => {
+    // Try server proxy first
+    try {
+      const params = new URLSearchParams({
+        place_id:     placeId,
+        sessiontoken: sessionTokenRef.current,
+      });
+      // For Nominatim osm:* ids, pass the embedded coords so the server can
+      // skip a second lookup round-trip
+      if (hint?.lat && hint?.lng) {
+        params.set("lat", hint.lat);
+        params.set("lng", hint.lng);
+      }
+      const res = await fetchWithTimeout(
+        `${API_BASE}/maps/place-details?${params.toString()}`,
+        {},
+        10_000
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.lat && data.lng) return data as PlaceDetails;
+      }
+    } catch (e) {
+      console.warn("[GooglePlacesSearch] place-details proxy failed:", e);
+    }
+
+    // Fallback: Google Maps JS API PlacesService
+    if (!GMAPS_KEY) throw new Error("Cannot get place details — API key missing");
+    await Promise.race([
+      loadGoogleMapsApi(),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("JS API load timeout")), 8_000)),
+    ]);
+    if (!placesServiceRef.current && dummyMapRef.current) {
+      placesServiceRef.current = new google.maps.places.PlacesService(dummyMapRef.current);
+    }
+    if (!placesServiceRef.current) throw new Error("PlacesService unavailable");
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("PlacesService.getDetails timeout")), 8_000);
+      placesServiceRef.current!.getDetails(
+        { placeId, fields: ["place_id", "formatted_address", "address_components", "geometry"] },
+        (result, status) => {
+          clearTimeout(timer);
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
+            reject(new Error(`PlacesService status: ${status}`));
+            return;
+          }
+          const comps = result.address_components || [];
+          const getComp = (...types: string[]) => {
+            for (const type of types) {
+              const found = comps.find(c => c.types.includes(type));
+              if (found) return found.long_name;
+            }
+            return "";
+          };
+          resolve({
+            place_id:          result.place_id || placeId,
+            formatted_address: result.formatted_address || "",
+            lat:               result.geometry?.location?.lat() ?? 0,
+            lng:               result.geometry?.location?.lng() ?? 0,
+            city:    getComp("locality", "administrative_area_level_3", "administrative_area_level_2"),
+            locality:getComp("sublocality_level_1", "sublocality", "neighborhood"),
+            pincode: getComp("postal_code"),
+            state:   getComp("administrative_area_level_1"),
+            country: getComp("country"),
+          });
+        }
+      );
+    });
+  };
+
+  // ── Use Current Location (GPS → reverse-geocode) ──────────────────────────
+  const handleUseCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      toast.error("Geolocation is not supported by your browser.");
+      return;
+    }
+    setGpsLoading(true);
+    setSearchError(null);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        try {
+          const res = await fetchWithTimeout(
+            `${API_BASE}/maps/reverse-geocode?lat=${latitude}&lng=${longitude}`,
+            {},
+            10_000
+          );
+          if (!res.ok) throw new Error(`Reverse geocode failed: ${res.status}`);
+          const data = await res.json() as PlaceDetails;
+          if (!data.formatted_address) throw new Error("No address returned");
+          setQuery(data.formatted_address);
+          onLocationSelected({ ...data, lat: latitude, lng: longitude });
+        } catch (err) {
+          console.error("[GPS reverse-geocode]", err);
+          // Fallback: just use raw coordinates
+          onLocationSelected({
+            place_id:          "",
+            formatted_address: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+            lat:               latitude,
+            lng:               longitude,
+            city: "", locality: "", pincode: "",
+          });
+          setQuery(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+        } finally {
+          setGpsLoading(false);
+        }
+      },
+      (err) => {
+        setGpsLoading(false);
+        const msg =
+          err.code === 1 ? "Location access denied. Please allow location in your browser settings." :
+          err.code === 2 ? "Location unavailable. Check your GPS or network." :
+                           "Location request timed out. Please try again.";
+        toast.error(msg);
+      },
+      { timeout: 10_000, maximumAge: 60_000, enableHighAccuracy: false }
+    );
   };
 
   const handleInput = (val: string) => {
     setQuery(val);
+    setSearchError(null);
+    if (!val.trim()) {
+      setSuggestions([]);
+      setOpen(false);
+      onClear();
+      return;
+    }
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(val), 350);
+    debounceRef.current = setTimeout(() => fetchSuggestions(val), 350);
   };
 
-  const select = (item: LocationSuggestion) => {
-    setQuery(item.name);
+  const selectPlace = async (item: PlaceSuggestion) => {
     setOpen(false);
-    onChange(parseFloat(item.lat).toFixed(7), parseFloat(item.lng).toFixed(7), item.name);
+    setQuery(item.description);
+    setFetchingDetails(true);
+    setSuggestions([]);
+    sessionTokenRef.current = crypto.randomUUID();
+
+    try {
+      const details = await fetchPlaceDetails(
+        item.place_id,
+        item._lat && item._lng ? { lat: item._lat, lng: item._lng } : undefined
+      );
+      if (!details.lat || !details.lng) {
+        toast.error("Could not get coordinates for this location. Please try another result.");
+        return;
+      }
+      onLocationSelected(details);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      console.error("[GooglePlacesSearch] place details error:", msg);
+      toast.error("Could not fetch place details. Please try again or use a different result.");
+    } finally {
+      setFetchingDetails(false);
+    }
+  };
+
+  const clearAll = () => {
+    setQuery("");
+    setSuggestions([]);
+    setOpen(false);
+    setSearchError(null);
+    onClear();
+    setTimeout(() => inputRef.current?.focus(), 50);
   };
 
   const pinned = !!(lat && lng);
+  const busy   = loading || fetchingDetails || gpsLoading;
 
   return (
     <div ref={containerRef} className="relative">
-      <div className="relative">
-        <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-        <input
-          value={query}
-          onChange={e => handleInput(e.target.value)}
-          onFocus={() => { if (results.length > 0) setOpen(true); else if (query.trim().length >= 2) search(query); }}
-          placeholder="Type any complex, office, society or location name to search in city…"
-          className="w-full rounded-xl border border-[#e8d9c0] pl-9 pr-10 py-2.5 text-xs sm:text-sm bg-white outline-none focus:border-[#C9921A] cursor-pointer"
-          style={{ borderColor: pinned ? "#16a34a" : undefined }}
-          autoComplete="off"
-        />
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
-          {loading && <span className="h-4 w-4 border-2 border-[#C9921A] border-t-transparent rounded-full animate-spin block" />}
-          {!loading && pinned && <Check className="h-4 w-4 text-green-600" />}
-          {!loading && query && (
-            <button type="button" onClick={() => { setQuery(""); setResults([]); setOpen(false); onChange("","",""); }}
-              className="text-muted-foreground hover:text-destructive p-0.5">
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
+      {/* Hidden div needed by PlacesService as attribution container */}
+      <div ref={dummyMapRef} style={{ display: "none" }} />
+
+      {/* Search input row */}
+      <div className="flex gap-2 items-stretch">
+        <div className="relative flex-1">
+          <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => handleInput(e.target.value)}
+            onFocus={() => {
+              if (suggestions.length > 0) setOpen(true);
+              else if (query.trim().length >= 2 && !pinned) fetchSuggestions(query);
+            }}
+            onKeyDown={e => {
+              if (e.key === "Escape") { setOpen(false); setSearchError(null); }
+              if (e.key === "Enter" && query.trim().length >= 2 && !busy) {
+                if (debounceRef.current) clearTimeout(debounceRef.current);
+                fetchSuggestions(query);
+              }
+            }}
+            placeholder="Search society, building, shop, office, area, landmark or full address…"
+            className="w-full rounded-xl border border-[#e8d9c0] pl-9 pr-10 py-2.5 text-xs sm:text-sm bg-white outline-none focus:border-[#C9921A] transition-colors"
+            style={{ borderColor: pinned ? "#16a34a" : undefined }}
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Search location"
+            aria-expanded={open}
+            aria-haspopup="listbox"
+          />
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+            {busy && (
+              <span className="h-4 w-4 border-2 border-[#C9921A] border-t-transparent rounded-full animate-spin block" aria-label="Loading" />
+            )}
+            {!busy && pinned && (
+              <Check className="h-4 w-4 text-green-600" />
+            )}
+            {!busy && query && (
+              <button
+                type="button"
+                onClick={clearAll}
+                className="text-muted-foreground hover:text-destructive p-0.5 rounded"
+                aria-label="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Use Current Location button */}
+        <button
+          type="button"
+          onClick={handleUseCurrentLocation}
+          disabled={busy}
+          title="Use my current GPS location"
+          className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-[#e8d9c0] bg-white hover:bg-[#fef8eb] hover:border-[#C9921A] text-[#836737] text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          aria-label="Use current location"
+        >
+          {gpsLoading
+            ? <span className="h-3.5 w-3.5 border-2 border-[#C9921A] border-t-transparent rounded-full animate-spin block" />
+            : <Navigation className="h-3.5 w-3.5 text-[#C9921A]" />
+          }
+          <span className="hidden sm:inline">Use Current Location</span>
+        </button>
       </div>
 
-      {/* Dropdown results */}
-      {open && results.length > 0 && (
-        <div className="absolute top-full left-0 right-0 mt-1 rounded-2xl bg-white border border-[#e8d9c0] shadow-2xl py-1.5 z-50 max-h-72 overflow-y-auto animate-in fade-in">
-          <div className="px-3.5 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#836737] border-b border-[#f0e4d2] flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <MapPin className="h-3 w-3 text-[#C9921A]" />
-              <span>Matching Locations</span>
-            </span>
-            <span className="text-[9px] text-[#836737] font-bold">{results.length} results</span>
+      {/* Error / empty state message */}
+      {searchError && !open && (
+        <p className="mt-1.5 text-xs text-red-600 font-medium px-1 flex items-center gap-1" role="alert">
+          <span>⚠</span> {searchError}
+        </p>
+      )}
+
+      {/* Autocomplete dropdown */}
+      {open && suggestions.length > 0 && (
+        <div
+          className="absolute top-full left-0 right-0 mt-1 rounded-2xl bg-white border border-[#e8d9c0] shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-1"
+          role="listbox"
+          aria-label="Location suggestions"
+        >
+          {/* Header */}
+          <div className="px-3.5 py-2 text-[10px] font-extrabold uppercase tracking-wider text-[#836737] border-b border-[#f0e4d2] flex items-center gap-1.5">
+            <MapPin className="h-3 w-3 text-[#C9921A]" />
+            <span>Google Places Results</span>
           </div>
-          {results.map((item, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => select(item)}
-              className="w-full text-left px-3.5 py-2.5 hover:bg-[#fef8eb] hover:text-[#C9921A] transition-colors border-b last:border-b-0 border-[#f8f1e5] flex items-start gap-2.5 cursor-pointer"
-            >
-              <MapPin className="h-4 w-4 text-[#C9921A] shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <p className="font-bold text-xs text-[#1a1209] truncate">{item.name}</p>
-                <p className="text-[10px] text-[#836737] line-clamp-1 mt-0.5 truncate">{item.fullAddress}</p>
-              </div>
-              {lat === parseFloat(item.lat).toFixed(7) && (
-                <Check className="h-4 w-4 text-green-600 shrink-0 self-center" />
-              )}
-            </button>
-          ))}
+          {/* Results list */}
+          <div className="max-h-64 overflow-y-auto">
+            {suggestions.map((item) => (
+              <button
+                key={item.place_id}
+                type="button"
+                role="option"
+                onClick={() => selectPlace(item)}
+                className="w-full text-left px-3.5 py-2.5 hover:bg-[#fef8eb] transition-colors border-b last:border-b-0 border-[#f8f1e5] flex items-start gap-2.5 cursor-pointer group"
+              >
+                <MapPin className="h-4 w-4 text-[#C9921A] shrink-0 mt-0.5 group-hover:scale-110 transition-transform" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-xs text-[#1a1209] truncate group-hover:text-[#C9921A]">
+                    {item.main_text}
+                  </p>
+                  {item.secondary_text && (
+                    <p className="text-[10px] text-[#836737] line-clamp-1 mt-0.5 truncate">
+                      {item.secondary_text}
+                    </p>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+          {/* Google attribution — required by ToS */}
+          <div className="px-3.5 py-2 border-t border-[#f0e4d2] flex items-center justify-end gap-1.5 bg-[#fdfbf7]">
+            <span className="text-[9px] text-[#a08858] font-medium">Powered by</span>
+            <img
+              src="https://developers.google.com/static/maps/documentation/images/google_on_white.png"
+              alt="Google"
+              className="h-3 object-contain opacity-80"
+            />
+          </div>
         </div>
       )}
 
-      {/* Pinned confirmation */}
+      {/* Confirmed location banner */}
       {pinned && (
-        <p className="mt-1.5 text-[11px] font-semibold text-green-700 flex items-center gap-1.5">
-          <span className="text-[#C9921A]">📍</span>
-          Location pinned · {Number(lat).toFixed(6)}, {Number(lng).toFixed(6)}
-          <a href={`https://www.google.com/maps?q=${lat},${lng}&z=17`} target="_blank" rel="noopener noreferrer"
-            className="ml-1 underline text-green-600 hover:text-green-800">Verify</a>
-        </p>
+        <div className="mt-2 rounded-xl border border-green-200 bg-green-50 px-3.5 py-2.5 flex items-start gap-2.5">
+          <span className="text-base shrink-0 mt-0.5">📍</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-bold text-green-800 truncate">{query}</p>
+            <p className="text-[11px] text-green-700 mt-0.5 font-medium">
+              {Number(lat).toFixed(6)}, {Number(lng).toFixed(6)}
+              &nbsp;·&nbsp;
+              <a
+                href={`https://www.google.com/maps?q=${lat},${lng}&z=17`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-green-900"
+              >
+                Open in Google Maps ↗
+              </a>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={clearAll}
+            className="shrink-0 text-green-600 hover:text-red-500 p-0.5 rounded transition-colors"
+            title="Change location"
+            aria-label="Change location"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
       )}
     </div>
   );
@@ -563,6 +971,7 @@ function NewProperty() {
     tourModelUrl: "",
     tourPanoramaUrl: "",
     aiSourceFiles: [],
+    panoramaBlob: null,
   });
 
   // Fetch logged in user profile to display owner details and phone number
@@ -585,6 +994,9 @@ function NewProperty() {
 
   // Synchronize full address whenever structured components change
   useEffect(() => {
+    // When location is locked (Google place selected), address is already set from Google — don't overwrite.
+    // Only auto-assemble when the user is manually filling the structured fields.
+    if (form.location_locked) return;
     const fullStr = [
       form.house_number ? `Flat/House ${form.house_number}` : "",
       form.wing ? `${form.wing}` : "",
@@ -595,7 +1007,7 @@ function NewProperty() {
       form.pincode ? `- ${form.pincode}` : "",
     ].filter(Boolean).join(", ");
     if (fullStr) setForm(f => ({ ...f, address: fullStr }));
-  }, [form.house_number, form.wing, form.building_name, form.landmark, form.locality, form.city, form.pincode]);
+  }, [form.house_number, form.wing, form.building_name, form.landmark, form.locality, form.city, form.pincode, form.location_locked]);
 
   // Close title dropdown on outside click
   useEffect(() => {
@@ -816,7 +1228,7 @@ function NewProperty() {
         title:            toSmartTitleCase(form.title),
         description:      toSmartTitleCase(form.description) || undefined,
         property_type:    form.property_type,
-        listing_type:     form.listing_type,
+        listing_type:     form.listing_type as "rent" | "sale" | "pg",
         bedrooms:         form.bedrooms ? Number(form.bedrooms) : 0,
         bathrooms:        form.bathrooms ? Number(form.bathrooms) : 0,
         area_sqft:        form.area_sqft ? Number(form.area_sqft) : 0,
@@ -832,6 +1244,8 @@ function NewProperty() {
         latitude:         form.latitude ? Number(form.latitude) : undefined,
         longitude:        form.longitude ? Number(form.longitude) : undefined,
         facing:           form.entrance_direction,
+        // Google Place ID — saved in map_url field as it's the closest existing field
+        // The google_place_id is available for future DB migration if needed
       });
 
       try {
@@ -854,7 +1268,17 @@ function NewProperty() {
         } else if (tourState.tourType === "model" && tourState.modelFile) {
           await tourApi.uploadModel(createdProp.id, tourState.modelFile);
         } else if (tourState.tourType === "ai_generated" && tourState.aiSourceFiles.length > 0) {
-          await tourApi.generate360(createdProp.id, tourState.aiSourceFiles);
+          // Send the pre-stitched panorama blob (generated in-browser) to server.
+          // This ensures the server stores the real equirectangular panorama, not
+          // just the first raw source image (which happens when the canvas npm
+          // package is unavailable server-side).
+          const panoramaFile = tourState.panoramaBlob
+            ? new File([tourState.panoramaBlob], `panorama-${createdProp.id}.jpg`, { type: "image/jpeg" })
+            : null;
+          const directions = tourState.aiSourceFiles.map((_f, i) => ({
+            slot: i, label: `Wall ${i + 1}`, angle: i * (360 / tourState.aiSourceFiles.length),
+          }));
+          await tourApi.generate360(createdProp.id, tourState.aiSourceFiles, panoramaFile, directions);
         }
       } catch (tourErr) {
         console.error("Tour upload error:", tourErr);
@@ -1172,11 +1596,25 @@ function NewProperty() {
         {/* Row 1: City & Locality */}
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label className="font-bold text-xs sm:text-sm text-[#1a1209]">City <span className="text-destructive font-bold">*</span></Label>
-            <Select value={form.city} onValueChange={v => upd("city", v)}>
-              <SelectTrigger className="bg-white border-[#e8d9c0]"><SelectValue /></SelectTrigger>
-              <SelectContent>{cities.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-            </Select>
+            <Label className="font-bold text-xs sm:text-sm text-[#1a1209]">
+              City <span className="text-destructive font-bold">*</span>
+              {form.location_locked && (
+                <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-md">
+                  <Check className="h-2.5 w-2.5" /> Auto-filled
+                </span>
+              )}
+            </Label>
+            {form.location_locked ? (
+              <div className="flex items-center gap-2 h-9 rounded-md border border-green-200 bg-green-50 px-3 text-sm font-semibold text-[#1a1209]">
+                <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                <span className="truncate">{form.city}</span>
+              </div>
+            ) : (
+              <Select value={form.city} onValueChange={v => upd("city", v)}>
+                <SelectTrigger className="bg-white border-[#e8d9c0]"><SelectValue /></SelectTrigger>
+                <SelectContent>{cities.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -1184,20 +1622,32 @@ function NewProperty() {
               <Label className="font-bold text-xs sm:text-sm text-[#1a1209]">
                 <span>Locality / Area</span>
                 <span className="text-destructive font-bold">*</span>
+                {form.location_locked && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-md">
+                    <Check className="h-2.5 w-2.5" /> Auto-filled
+                  </span>
+                )}
               </Label>
-              {!hasCapitalFirstLetters(form.locality) && form.locality.length > 0 && (
+              {!form.location_locked && !hasCapitalFirstLetters(form.locality) && form.locality.length > 0 && (
                 <span className="text-[10px] font-semibold text-destructive animate-pulse bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-md">
                   Plz Write First Letter In Capital
                 </span>
               )}
             </div>
-            <Input
-              value={form.locality}
-              onChange={e => upd("locality", toSmartTitleCase(e.target.value))}
-              onBlur={e => upd("locality", toSmartTitleCase(e.target.value))}
-              placeholder="e.g. Bodakdev, Bopal, Prahladnagar"
-              className="bg-white border-[#e8d9c0]"
-            />
+            {form.location_locked ? (
+              <div className="flex items-center gap-2 h-9 rounded-md border border-green-200 bg-green-50 px-3 text-sm font-semibold text-[#1a1209]">
+                <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                <span className="truncate">{form.locality || <span className="text-muted-foreground font-normal text-xs">Not available for this place</span>}</span>
+              </div>
+            ) : (
+              <Input
+                value={form.locality}
+                onChange={e => upd("locality", toSmartTitleCase(e.target.value))}
+                onBlur={e => upd("locality", toSmartTitleCase(e.target.value))}
+                placeholder="e.g. Bodakdev, Bopal, Prahladnagar"
+                className="bg-white border-[#e8d9c0]"
+              />
+            )}
           </div>
         </div>
 
@@ -1271,16 +1721,28 @@ function NewProperty() {
         <div className="space-y-1.5">
           <Label className="font-semibold text-xs sm:text-sm text-[#1a1209]">
             Pincode
+            {form.location_locked && (
+              <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-md">
+                <Check className="h-2.5 w-2.5" /> Auto-filled
+              </span>
+            )}
           </Label>
-          <Input
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            value={form.pincode}
-            onChange={e => upd("pincode", e.target.value.replace(/\D/g, "").slice(0, 6))}
-            placeholder="e.g. 380015"
-            className="bg-white border-[#e8d9c0]"
-          />
+          {form.location_locked ? (
+            <div className="flex items-center gap-2 h-9 rounded-md border border-green-200 bg-green-50 px-3 text-sm font-semibold text-[#1a1209]">
+              <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
+              <span>{form.pincode || <span className="text-muted-foreground font-normal text-xs">Not available for this place</span>}</span>
+            </div>
+          ) : (
+            <Input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={form.pincode}
+              onChange={e => upd("pincode", e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="e.g. 380015"
+              className="bg-white border-[#e8d9c0]"
+            />
+          )}
         </div>
 
         {/* Row 6: Auto-Assembled Full Address */}
@@ -1299,7 +1761,7 @@ function NewProperty() {
         </div>
       </div>
 
-      {/* ── Google Maps Location — text input + inline map preview ── */}
+      {/* ── Google Maps Location — Google Places Autocomplete ── */}
       <div className="space-y-1.5 relative">
         <div className="flex items-center justify-between flex-wrap gap-1">
           <Label className="flex items-center gap-1.5 font-bold">
@@ -1313,18 +1775,94 @@ function NewProperty() {
           </span>
         </div>
 
-        {/* Search input — accepts place name OR Google Maps share URL */}
-        <LocationSearch
+        {/* Helper hint */}
+        <p className="text-[11px] text-[#a08858]">
+          Search any society, shop, office, street or full address — select from Google results to auto-fill location details.
+        </p>
+
+        {/* Google Places Autocomplete input */}
+        <GooglePlacesSearch
           value={form.map_url}
           lat={form.latitude}
           lng={form.longitude}
-          city={form.city}
-          onChange={(lat, lng, display) => {
-            upd("latitude", lat);
-            upd("longitude", lng);
-            upd("map_url", display || `${lat},${lng}`);
+          onLocationSelected={(details) => {
+            // Match city to our supported cities list (case-insensitive)
+            const matchedCity = cities.find(
+              c => c.toLowerCase() === (details.city || "").toLowerCase()
+            ) || form.city;
+
+            setForm(f => ({
+              ...f,
+              latitude:        details.lat.toFixed(7),
+              longitude:       details.lng.toFixed(7),
+              map_url:         details.formatted_address,
+              google_place_id: details.place_id,
+              city:            matchedCity,
+              locality:        details.locality ? toSmartTitleCase(details.locality) : f.locality,
+              pincode:         details.pincode || f.pincode,
+              address:         details.formatted_address,
+              location_locked: true,
+            }));
+          }}
+          onClear={() => {
+            setForm(f => ({
+              ...f,
+              latitude:        "",
+              longitude:       "",
+              map_url:         "",
+              google_place_id: "",
+              location_locked: false,
+            }));
           }}
         />
+
+        {/* Mini map preview — shown after a location is selected */}
+        {form.latitude && form.longitude && (
+          <div className="mt-2 rounded-xl overflow-hidden border border-[#e8d9c0] shadow-sm" style={{ height: 180 }}>
+            <iframe
+              title="Location preview"
+              width="100%"
+              height="180"
+              style={{ border: 0, display: "block" }}
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyCpYRtyqbCoy7Kc18XoYBPJZkBpjGIRIjc&q=${form.latitude},${form.longitude}&zoom=16&maptype=roadmap`}
+            />
+          </div>
+        )}
+
+        {/* Location details summary card — shown after selection */}
+        {form.location_locked && (
+          <div className="mt-2 rounded-xl border border-[#e8d9c0] bg-[#fdfbf7] px-3.5 py-3 space-y-1.5">
+            <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#836737] flex items-center gap-1.5">
+              <Check className="h-3 w-3 text-green-600" />
+              Location Confirmed — Auto-filled Details
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-[11px]">
+              {form.city && (
+                <div><span className="text-[#a08858] font-semibold">City: </span><span className="text-[#1a1209] font-bold">{form.city}</span></div>
+              )}
+              {form.locality && (
+                <div><span className="text-[#a08858] font-semibold">Locality: </span><span className="text-[#1a1209] font-bold">{form.locality}</span></div>
+              )}
+              {form.pincode && (
+                <div><span className="text-[#a08858] font-semibold">Pincode: </span><span className="text-[#1a1209] font-bold">{form.pincode}</span></div>
+              )}
+              {form.latitude && (
+                <div><span className="text-[#a08858] font-semibold">Lat: </span><span className="text-[#1a1209] font-bold">{Number(form.latitude).toFixed(6)}</span></div>
+              )}
+              {form.longitude && (
+                <div><span className="text-[#a08858] font-semibold">Lng: </span><span className="text-[#1a1209] font-bold">{Number(form.longitude).toFixed(6)}</span></div>
+              )}
+              {form.google_place_id && (
+                <div className="col-span-2 sm:col-span-3 truncate">
+                  <span className="text-[#a08858] font-semibold">Place ID: </span>
+                  <span className="text-[#1a1209] font-mono text-[10px]">{form.google_place_id}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Property Title (Single Combined Editable Input + AI Suggestions Popup) ── */}
