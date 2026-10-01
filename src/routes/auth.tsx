@@ -38,8 +38,8 @@ function AuthPage() {
   // Sign in — send OTP to email (both email + phone required)
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim())  { toast.error("Email is required"); return; }
-    if (!phone.trim())  { toast.error("Phone number is required"); return; }
+    if (!email.trim())  { toast.error("(Email) this field is req."); return; }
+    if (!phone.trim())  { toast.error("(Phone Number) this field is req."); return; }
     setLoading(true);
     try {
       await authApi.sendOtp(email);
@@ -53,8 +53,9 @@ function AuthPage() {
   // Create account — register then send OTP
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) { toast.error("Email required"); return; }
-    if (!phone) { toast.error("Phone number required"); return; }
+    if (!name.trim())  { toast.error("(Full Name) this field is req."); return; }
+    if (!email.trim()) { toast.error("(Email) this field is req."); return; }
+    if (!phone.trim()) { toast.error("(Phone Number) this field is req."); return; }
     setLoading(true);
     try {
       // Use phone as temp password (user will verify via OTP)
@@ -144,7 +145,7 @@ function AuthPage() {
       </div>
 
       {/* ══ RIGHT — Form (NO card border, direct on bg) ════════════ */}
-      <div className="flex flex-1 flex-col justify-center px-8 py-12 lg:px-14 overflow-y-auto"
+      <div className="flex flex-1 flex-col justify-center px-4 py-8 sm:px-8 sm:py-12 lg:px-14 overflow-y-auto"
         style={{ backgroundColor: BG }}>
 
         {/* Mobile logo */}
@@ -157,7 +158,7 @@ function AuthPage() {
         <div className="w-full max-w-[460px] mx-auto">
 
           {/* White card wrapper */}
-          <div className="rounded-2xl bg-white px-8 py-6"
+          <div className="rounded-2xl bg-white px-5 py-6 sm:px-8"
             style={{ boxShadow: "0 4px 32px rgba(201,146,26,0.10), 0 1px 4px rgba(0,0,0,0.06)", border: "1px solid #f0e4cc" }}>
 
           {/* Heading */}
@@ -186,7 +187,7 @@ function AuthPage() {
               SIGN IN — Email + Phone only
           ══════════════════════════════════ */}
           {tab === "signin" && (
-            <form onSubmit={handleSignIn} className="space-y-[10px]">
+            <form onSubmit={handleSignIn} noValidate className="space-y-[10px]">
 
               {/* Email */}
               <div>
@@ -261,7 +262,7 @@ function AuthPage() {
               Name · Email · Mobile · Role radio · Button
           ══════════════════════════════════ */}
           {tab === "signup" && (
-            <form onSubmit={handleSignUp} className="space-y-[10px]">
+            <form onSubmit={handleSignUp} noValidate className="space-y-[10px]">
 
               {/* Full Name */}
               <div>

@@ -1,10 +1,9 @@
-import { Router }  from "express";
-import multer      from "multer";
+import { Router } from "express";
+import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
-import path        from "path";
-import pool        from "../db.js";
+import pool from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
-import { supabaseAdmin, IMAGES_BUCKET } from "../lib/supabase.js";
+import { uploadToLocal, removeLocalFile } from "../lib/storage.js";
 
 const router = Router();
 
@@ -19,46 +18,28 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per image
 });
 
-// ─── Helper: upload one file buffer to Supabase Storage, return public URL ───
-async function uploadToSupabase(propertyId, file) {
-  const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
-  const objectPath = `${propertyId}/${uuidv4()}${ext}`;
-
-  const { error: uploadErr } = await supabaseAdmin.storage
-    .from(IMAGES_BUCKET)
-    .upload(objectPath, file.buffer, {
-      contentType: file.mimetype,
-      upsert: false,
-    });
-
-  if (uploadErr) throw new Error(`Supabase upload failed: ${uploadErr.message}`);
-
-  const { data: { publicUrl } } = supabaseAdmin.storage
-    .from(IMAGES_BUCKET)
-    .getPublicUrl(objectPath);
-
-  return { url: publicUrl, storagePath: objectPath };
-}
-
 // ─── Helper: ensure panorama_360_url column exists (one-time, silent) ─────────
 let _panoramaColumnChecked = false;
 async function ensurePanoramaColumn() {
   if (_panoramaColumnChecked) return;
   try {
-    await pool.query(
-      `ALTER TABLE nivaas_properties ADD COLUMN IF NOT EXISTS panorama_360_url VARCHAR(2000) DEFAULT NULL`
+    const [cols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'nivaas_properties' AND COLUMN_NAME = 'panorama_360_url'`,
+      [process.env.DB_NAME || "nivaas"]
     );
+    if (cols.length === 0) {
+      await pool.query(
+        `ALTER TABLE nivaas_properties ADD COLUMN panorama_360_url VARCHAR(2000) DEFAULT NULL`
+      );
+    }
     _panoramaColumnChecked = true;
   } catch {
-    // Column may already exist or migration was run — ignore
     _panoramaColumnChecked = true;
   }
 }
 
 // ─── Helper: build & store panorama from property images ──────────────────────
-// Uses the cover image URL as the panorama source.
-// The CSS panorama viewer (background-repeat: repeat-x) creates the 360° effect
-// from any single wide image — no stitching library needed.
 async function updatePanorama(propertyId) {
   try {
     await ensurePanoramaColumn();
@@ -67,7 +48,7 @@ async function updatePanorama(propertyId) {
     const [imgs] = await pool.query(
       `SELECT url FROM nivaas_property_images
        WHERE property_id = ?
-       ORDER BY (is_cover::int) DESC, sort_order ASC
+       ORDER BY is_cover DESC, sort_order ASC
        LIMIT 20`,
       [propertyId]
     );
@@ -75,7 +56,6 @@ async function updatePanorama(propertyId) {
     if (!imgs || imgs.length === 0) return;
 
     // Use the cover image (first in sort) as the panorama source.
-    // The CSS viewer tiles it horizontally to simulate a 360° walk.
     const panoramaUrl = imgs[0].url;
 
     await pool.query(
@@ -83,7 +63,6 @@ async function updatePanorama(propertyId) {
       [panoramaUrl, propertyId]
     );
   } catch (err) {
-    // Never crash the main upload — panorama is best-effort
     console.warn("[upload] panorama update failed:", err.message);
   }
 }
@@ -129,13 +108,13 @@ router.post(
         const sortOrder = startOrder + i;
         const isCover   = startOrder === 0 && i === 0;
 
-        const { url, storagePath } = await uploadToSupabase(propertyId, file);
+        const { url, storagePath } = await uploadToLocal(`properties/${propertyId}`, file);
 
         await pool.query(
           `INSERT INTO nivaas_property_images
              (id, property_id, url, storage_path, is_cover, sort_order)
            VALUES (?, ?, ?, ?, ?, ?)`,
-          [id, propertyId, url, storagePath, isCover, sortOrder]
+          [id, propertyId, url, storagePath, isCover ? 1 : 0, sortOrder]
         );
 
         inserted.push({ id, url, is_cover: isCover, sort_order: sortOrder });
@@ -150,8 +129,7 @@ router.post(
         );
       }
 
-      // ── Auto-update panorama_360_url from the uploaded images ──────────────
-      // Runs asynchronously — response is not delayed.
+      // Auto-update panorama_360_url
       updatePanorama(propertyId);
 
       res.status(201).json({ images: inserted, count: inserted.length });
@@ -179,12 +157,9 @@ router.delete("/property-images/:imageId", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    // Delete from Supabase Storage
+    // Delete from local disk
     if (rows[0].storage_path) {
-      const { error: removeErr } = await supabaseAdmin.storage
-        .from(IMAGES_BUCKET)
-        .remove([rows[0].storage_path]);
-      if (removeErr) console.error("Supabase remove error:", removeErr.message);
+      await removeLocalFile(rows[0].storage_path);
     }
 
     await pool.query("DELETE FROM nivaas_property_images WHERE id = ?", [imageId]);
@@ -205,7 +180,7 @@ router.get("/property-images/:propertyId", async (req, res) => {
       `SELECT id, url, is_cover, sort_order, caption
        FROM nivaas_property_images
        WHERE property_id = ?
-       ORDER BY (is_cover::int) DESC, sort_order ASC`,
+       ORDER BY is_cover DESC, sort_order ASC`,
       [req.params.propertyId]
     );
     res.json(rows);
@@ -215,10 +190,6 @@ router.get("/property-images/:propertyId", async (req, res) => {
 });
 
 // ─── GET /api/upload/panorama/:propertyId ─────────────────────────────────────
-// Returns the best available panorama URL for a property.
-// Priority: tour_ai_panorama_url (real stitched 360°) → panorama_360_url
-// (cover image auto-set on upload) → cover_image_url → first uploaded image.
-// This endpoint is used as a fallback by the property detail page.
 router.get("/panorama/:propertyId", async (req, res) => {
   try {
     const { propertyId } = req.params;
@@ -228,11 +199,10 @@ router.get("/panorama/:propertyId", async (req, res) => {
     try {
       const [rows] = await pool.query(
         `SELECT tour_ai_panorama_url, panorama_360_url
-         FROM nivaas_properties WHERE id = $1`,
+         FROM nivaas_properties WHERE id = ?`,
         [propertyId]
       );
       if (rows.length > 0) {
-        // Prefer the real stitched panorama over the auto-set cover image
         panoramaUrl = rows[0].tour_ai_panorama_url ?? rows[0].panorama_360_url ?? null;
       }
     } catch {
@@ -243,7 +213,7 @@ router.get("/panorama/:propertyId", async (req, res) => {
     if (!panoramaUrl) {
       try {
         const [rows] = await pool.query(
-          `SELECT cover_image_url FROM nivaas_properties WHERE id = $1 LIMIT 1`,
+          `SELECT cover_image_url FROM nivaas_properties WHERE id = ? LIMIT 1`,
           [propertyId]
         );
         if (rows.length > 0) panoramaUrl = rows[0].cover_image_url ?? null;
@@ -253,7 +223,7 @@ router.get("/panorama/:propertyId", async (req, res) => {
     // Priority 3: first uploaded image
     if (!panoramaUrl) {
       const [imgs] = await pool.query(
-        "SELECT url FROM nivaas_property_images WHERE property_id = $1 ORDER BY sort_order ASC LIMIT 1",
+        "SELECT url FROM nivaas_property_images WHERE property_id = ? ORDER BY sort_order ASC LIMIT 1",
         [propertyId]
       );
       if (imgs.length > 0) panoramaUrl = imgs[0].url;
@@ -271,7 +241,6 @@ router.get("/panorama/:propertyId", async (req, res) => {
 });
 
 // ─── POST /api/upload/panorama/:propertyId ────────────────────────────────────
-// Manually trigger a panorama refresh for a property (owner only).
 router.post("/panorama/:propertyId", requireAuth, async (req, res) => {
   try {
     const { propertyId } = req.params;

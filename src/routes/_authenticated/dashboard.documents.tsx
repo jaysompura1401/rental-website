@@ -60,8 +60,12 @@ function UploadDialog({ onUploaded }: { onUploaded: () => void }) {
   };
 
   const handleSave = async () => {
-    if (!form.title || !fileUrl) {
-      toast.error("Title and file are required");
+    if (!form.title.trim()) {
+      toast.error("(Document Title) this field is req.");
+      return;
+    }
+    if (!fileUrl) {
+      toast.error("(Document File) this field is req.");
       return;
     }
     setSaving(true);

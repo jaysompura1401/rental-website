@@ -1,164 +1,196 @@
-import pkg from "pg";
+import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const { Pool } = pkg;
+// ─── MySQL Connection Pool ─────────────────────────────────────────────────────
+const poolConfig = process.env.MYSQL_URL
+  ? {
+      uri: process.env.MYSQL_URL,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      dateStrings: true,
+    }
+  : {
+      host: process.env.MYSQLHOST || process.env.DB_HOST || "localhost",
+      user: process.env.MYSQLUSER || process.env.DB_USER || "root",
+      password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || "",
+      database: process.env.MYSQLDATABASE || process.env.DB_NAME || "nivaas",
+      port: Number(process.env.MYSQLPORT || process.env.DB_PORT) || 3306,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      dateStrings: true,
+    };
 
-// ─── PostgreSQL connection pool ───────────────────────────────────────────────
-// Reads DATABASE_URL from .env (Supabase connection string — use the
-// "Transaction" or "Session" pooler URL from Supabase → Settings → Database)
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-});
+const pool = mysql.createPool(poolConfig);
 
-// ─── Thin compatibility shim ─────────────────────────────────────────────────
-// mysql2 returns [rows, fields] from pool.query(sql, params).
-// The pg driver returns { rows, fields }. This wrapper keeps every route file
-// working without changes — all existing code does:
-//   const [rows] = await pool.query(...)
-//   const [[row]] = await pool.query(...)
-//
-// Positional params:  mysql2 uses ?  →  pg uses $1, $2, …
-// This shim converts ? → $n automatically so route files stay unchanged.
+pool._pool = pool; // compatibility alias
 
-function convertPlaceholders(sql) {
-  let i = 0;
-  return sql.replace(/\?/g, () => `$${++i}`);
+// ─── Helper: add column if it doesn't already exist ───────────────────────────
+async function addColumnIfNotExists(conn, table, column, definition) {
+  try {
+    const [cols] = await conn.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      [table, column]
+    );
+    if (cols.length === 0) {
+      await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      console.log(`  + Added column \`${table}\`.\`${column}\``);
+    }
+  } catch (err) {
+    console.warn(`  Warning adding column ${table}.${column}:`, err.message);
+  }
 }
 
-const pgPool = {
-  query: async (sql, params = []) => {
-    const converted = convertPlaceholders(sql);
-    try {
-      const result = await pool.query(converted, params);
-      // Return [rows, fields] tuple to match mysql2 API
-      return [result.rows, result.fields];
-    } catch (err) {
-      console.error("DB query error:", err.message);
-      console.error("SQL:", converted);
-      throw err;
-    }
-  },
-  // Expose raw pg pool for transactions if needed in future
-  _pool: pool,
-};
-
-// Auto-initialize schema extensions for agent verification
-async function initSchemaExtensions(client) {
+// ─── Auto-initialize schema extensions for MySQL ──────────────────────────────
+async function initSchemaExtensions() {
+  let conn;
   try {
-    // 1. Update nivaas_users role check constraint to include 'agent' and 'verification_team'
-    await client.query(`
-      ALTER TABLE nivaas_users DROP CONSTRAINT IF EXISTS nivaas_users_role_check;
-      ALTER TABLE nivaas_users ADD CONSTRAINT nivaas_users_role_check 
-        CHECK (role IN ('customer', 'owner', 'admin', 'agent', 'verification_team'));
+    conn = await pool.getConnection();
+
+    // 1. Ensure nivaas_properties has all required columns
+    await addColumnIfNotExists(conn, "nivaas_properties", "verification_status", "VARCHAR(20) DEFAULT 'pending'");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_type", "VARCHAR(50) DEFAULT 'none'");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_url", "VARCHAR(2000) DEFAULT NULL");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_model_path", "VARCHAR(1000) DEFAULT NULL");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_model_url", "VARCHAR(2000) DEFAULT NULL");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_ai_panorama_url", "VARCHAR(2000) DEFAULT NULL");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_ai_source_images", "JSON DEFAULT NULL");
+    await addColumnIfNotExists(conn, "nivaas_properties", "tour_ai_status", "VARCHAR(50) DEFAULT 'pending'");
+    await addColumnIfNotExists(conn, "nivaas_properties", "panorama_360_url", "VARCHAR(2000) DEFAULT NULL");
+
+    // 2. Ensure nivaas_agent_verifications table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_agent_verifications\` (
+        \`id\`                  CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`property_id\`         CHAR(36) NOT NULL,
+        \`agent_id\`            CHAR(36) NOT NULL,
+        \`owner_id\`            CHAR(36) NOT NULL,
+        \`aadhaar_card_url\`    VARCHAR(1000) DEFAULT NULL,
+        \`utility_bill_url\`    VARCHAR(1000) DEFAULT NULL,
+        \`owner_photo_url\`     VARCHAR(1000) DEFAULT NULL,
+        \`property_photo_urls\` JSON DEFAULT NULL,
+        \`mobile_verified\`     TINYINT(1) NOT NULL DEFAULT 0,
+        \`verified_phone\`      VARCHAR(20) DEFAULT NULL,
+        \`status\`              VARCHAR(20) NOT NULL DEFAULT 'draft',
+        \`agent_notes\`         TEXT DEFAULT NULL,
+        \`created_at\`          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\`          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_agentverif_property\` (\`property_id\`),
+        KEY \`idx_agentverif_agent\` (\`agent_id\`),
+        KEY \`idx_agentverif_status\` (\`status\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 2. Ensure verification_status column exists on nivaas_properties
-    await client.query(`
-      ALTER TABLE nivaas_properties 
-      ADD COLUMN IF NOT EXISTS verification_status VARCHAR(20) DEFAULT 'pending';
+    // 3. Ensure nivaas_audit_logs table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_audit_logs\` (
+        \`id\`          CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`actor_id\`    CHAR(36) DEFAULT NULL,
+        \`action\`      VARCHAR(100) NOT NULL,
+        \`entity\`      VARCHAR(50) DEFAULT NULL,
+        \`entity_id\`   CHAR(36) DEFAULT NULL,
+        \`details\`     JSON DEFAULT NULL,
+        \`created_at\`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_audit_actor\` (\`actor_id\`),
+        KEY \`idx_audit_entity\` (\`entity\`, \`entity_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 3. Set default values for any legacy properties where verification_status is NULL
-    await client.query(`
-      UPDATE nivaas_properties 
-      SET verification_status = CASE WHEN verified = true THEN 'verified' ELSE 'pending' END 
-      WHERE verification_status IS NULL;
+    // 4. Ensure nivaas_verification_logs table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_verification_logs\` (
+        \`id\`           CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`property_id\`  CHAR(36) NOT NULL,
+        \`verifier_id\`  CHAR(36) NOT NULL,
+        \`action\`       VARCHAR(50) NOT NULL,
+        \`notes\`        TEXT DEFAULT NULL,
+        \`report_url\`   VARCHAR(1000) DEFAULT NULL,
+        \`created_at\`   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_vlog_property\` (\`property_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 4. Ensure nivaas_agent_verifications table exists
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS nivaas_agent_verifications (
-        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        property_id         UUID NOT NULL REFERENCES nivaas_properties(id) ON DELETE CASCADE,
-        agent_id            UUID NOT NULL REFERENCES nivaas_users(id) ON DELETE CASCADE,
-        owner_id            UUID NOT NULL REFERENCES nivaas_users(id) ON DELETE CASCADE,
-        aadhaar_card_url    VARCHAR(1000),
-        utility_bill_url    VARCHAR(1000),
-        owner_photo_url     VARCHAR(1000),
-        property_photo_urls JSONB NOT NULL DEFAULT '[]',
-        mobile_verified     BOOLEAN NOT NULL DEFAULT false,
-        verified_phone      VARCHAR(20),
-        status              VARCHAR(20) NOT NULL DEFAULT 'draft',
-        agent_notes         TEXT,
-        created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
+    // 5. Ensure nivaas_notifications table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_notifications\` (
+        \`id\`          CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`user_id\`     CHAR(36) NOT NULL,
+        \`type\`        VARCHAR(50) NOT NULL,
+        \`title\`       VARCHAR(255) NOT NULL,
+        \`body\`        TEXT DEFAULT NULL,
+        \`link\`        VARCHAR(500) DEFAULT NULL,
+        \`is_read\`     TINYINT(1) NOT NULL DEFAULT 0,
+        \`created_at\`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_notif_user\` (\`user_id\`),
+        KEY \`idx_notif_read\` (\`user_id\`, \`is_read\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 5. Create indexes if they don't exist
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_agentverif_property ON nivaas_agent_verifications (property_id);
-      CREATE INDEX IF NOT EXISTS idx_agentverif_agent    ON nivaas_agent_verifications (agent_id);
-      CREATE INDEX IF NOT EXISTS idx_agentverif_status   ON nivaas_agent_verifications (status);
+    // 6. Ensure nivaas_popup_leads table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_popup_leads\` (
+        \`id\`           CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`full_name\`    VARCHAR(255) NOT NULL,
+        \`phone\`        VARCHAR(30)  NOT NULL,
+        \`listing_type\` VARCHAR(50)  DEFAULT NULL,
+        \`created_at\`   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 6. Ensure nivaas_audit_logs table exists
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS nivaas_audit_logs (
-        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        actor_id    UUID REFERENCES nivaas_users(id) ON DELETE SET NULL,
-        action      VARCHAR(100) NOT NULL,
-        entity      VARCHAR(50),
-        entity_id   UUID,
-        details     JSONB,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_audit_actor  ON nivaas_audit_logs (actor_id);
-      CREATE INDEX IF NOT EXISTS idx_audit_entity ON nivaas_audit_logs (entity, entity_id);
+    // 7. Ensure nivaas_property_locations table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_property_locations\` (
+        \`id\`              CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`property_id\`     CHAR(36) NOT NULL,
+        \`google_maps_url\` VARCHAR(1000) DEFAULT NULL,
+        \`latitude\`        DECIMAL(10, 8) DEFAULT NULL,
+        \`longitude\`       DECIMAL(11, 8) DEFAULT NULL,
+        \`created_at\`      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\`      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`uq_property_locations_property_id\` (\`property_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 7. Ensure nivaas_verification_logs table exists
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS nivaas_verification_logs (
-        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        property_id  UUID NOT NULL REFERENCES nivaas_properties(id) ON DELETE CASCADE,
-        verifier_id  UUID NOT NULL REFERENCES nivaas_users(id) ON DELETE CASCADE,
-        action       VARCHAR(50) NOT NULL,
-        notes        TEXT,
-        report_url   VARCHAR(1000),
-        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_vlog_property ON nivaas_verification_logs (property_id);
+    // 8. Ensure nivaas_saved_properties table exists
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS \`nivaas_saved_properties\` (
+        \`id\`          CHAR(36) NOT NULL DEFAULT (UUID()),
+        \`user_id\`     CHAR(36) NOT NULL,
+        \`property_id\` CHAR(36) NOT NULL,
+        \`saved_at\`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`uq_saved_properties_user_property\` (\`user_id\`, \`property_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 8. Ensure nivaas_notifications table exists
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS nivaas_notifications (
-        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id     UUID NOT NULL REFERENCES nivaas_users(id) ON DELETE CASCADE,
-        type        VARCHAR(50) NOT NULL,
-        title       VARCHAR(255) NOT NULL,
-        body        TEXT,
-        link        VARCHAR(500),
-        is_read     BOOLEAN NOT NULL DEFAULT false,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_notif_user ON nivaas_notifications (user_id);
-      CREATE INDEX IF NOT EXISTS idx_notif_read ON nivaas_notifications (user_id, is_read);
-    `);
-
-    console.log("✅ Schema initialized: all missing tables (audit logs, verification logs, agent verification) ready");
+    console.log("✅ MySQL Schema check & auto-migrations completed");
   } catch (err) {
     console.error("⚠️ Schema extension warning:", err.message);
+  } finally {
+    if (conn) conn.release();
   }
 }
 
 // Test connection on startup
-pool.connect()
-  .then(async (client) => {
-    console.log("✅ PostgreSQL connected to Supabase");
-    await initSchemaExtensions(client);
-    client.release();
+pool.getConnection()
+  .then(async (conn) => {
+    console.log(`✅ MySQL connected to database "${process.env.DB_NAME || "nivaas"}" at ${process.env.DB_HOST || "localhost"}`);
+    conn.release();
+    await initSchemaExtensions();
   })
   .catch((err) => {
-    console.error("❌ PostgreSQL connection failed:", err.message);
-    console.error("   Check DATABASE_URL in server/.env");
+    console.error("❌ MySQL connection failed:", err.message);
+    console.error("   Check DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in server/.env");
   });
 
-export default pgPool;
+export default pool;

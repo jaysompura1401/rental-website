@@ -35,7 +35,7 @@ function Saved() {
         </div>
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-          {props.map(p => <PropertyCard key={p.id} p={p} />)}
+          {props.map(p => <PropertyCard key={p.id} p={p} fluid />)}
         </div>
       )}
     </DashboardShell>

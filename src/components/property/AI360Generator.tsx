@@ -307,19 +307,12 @@ export function AI360Generator({
     try {
       // Step 1: stitch in browser
       setStitchProgress("Stitching panorama…");
-      const panoramaBlob = await stitchPanorama(filled);
+      const { blob: panoramaBlob, dataUrl: localDataUrl } = await stitchPanorama(
+        filled.map(s => ({ url: s.previewUrl, angle: s.angle }))
+      );
 
-      // Step 2: convert blob → base64 data URL.
-      // pannellum uses XMLHttpRequest internally which CANNOT load blob: URLs
-      // (cross-origin restriction). A data: URL has no origin and works fine.
+      // Step 2: preview is ready immediately
       setStitchProgress("Preparing preview…");
-      const localDataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload  = () => resolve(reader.result as string);
-        reader.onerror = () => reject(new Error("FileReader failed"));
-        reader.readAsDataURL(panoramaBlob);
-      });
-
       setPreviewUrl(localDataUrl);
       setPreviewType("ai_generated");
       setShowPreview(true);
@@ -338,28 +331,30 @@ export function AI360Generator({
         const res = await tourApi.generate360(propertyId, sourceFiles, panoramaFile, directions);
         const serverUrl = res.tour_ai_panorama_url;
 
-        // Swap preview to the server-hosted URL once available
-        setPreviewUrl(serverUrl);
+        // Keep localDataUrl or swap to serverUrl if available
+        if (serverUrl) {
+          setPreviewUrl(serverUrl);
+        }
 
         const state: TourFormState = {
           tourType: "ai_generated", tourUrl: "", modelFile: null,
-          tourModelUrl: "", tourPanoramaUrl: serverUrl, aiSourceFiles: sourceFiles,
-          panoramaBlob: null, // already uploaded — server URL stored
+          tourModelUrl: "", tourPanoramaUrl: serverUrl || localDataUrl, aiSourceFiles: sourceFiles,
+          panoramaBlob: null,
         };
         onSaved?.(state); notify(state);
         toast.success("✨ 360° panorama created and saved!");
       } else {
         // Step 3b: no property yet — keep data URL + blob, notify parent
-        // panoramaBlob is kept so the publish handler can upload it to server
         notify({
           tourType: "ai_generated", tourUrl: "", modelFile: null,
           tourModelUrl: "", tourPanoramaUrl: localDataUrl,
           aiSourceFiles: sourceFiles,
-          panoramaBlob: panoramaBlob,   // ← the real stitched JPEG blob
+          panoramaBlob: panoramaBlob,
         });
         toast.success("✨ 360° preview ready! Full panorama saved on publish.");
       }
     } catch (e: any) {
+      console.error("[AI360Generator] Error generating 360 view:", e);
       toast.error(e.message ?? "Panorama generation failed — please retry");
       setPreviewUrl("");
       setPreviewType("none");

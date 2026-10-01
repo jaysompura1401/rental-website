@@ -61,7 +61,7 @@ router.get("/users", requireAuth, adminOnly, async (req, res) => {
     const params = [];
     let where = "WHERE 1=1";
     if (role) { where += " AND role=?";                                   params.push(role); }
-    if (q)    { where += " AND (full_name ILIKE ? OR email ILIKE ?)";     const l=`%${q}%`; params.push(l,l); }
+    if (q)    { where += " AND (full_name LIKE ? OR email LIKE ?)";     const l=`%${q}%`; params.push(l,l); }
     params.push(Number(limit), Number(offset));
 
     const [rows] = await pool.query(
@@ -114,7 +114,7 @@ router.get("/properties", requireAuth, adminOnly, async (req, res) => {
     if (status)              { where += " AND p.status=?";              params.push(status); }
     if (verification_status) { where += " AND p.verification_status=?"; params.push(verification_status); }
     if (city)                { where += " AND p.city=?";                params.push(city); }
-    if (q)                   { where += " AND (p.title ILIKE ? OR p.locality ILIKE ?)"; const l=`%${q}%`; params.push(l,l); }
+    if (q)                   { where += " AND (p.title LIKE ? OR p.locality LIKE ?)"; const l=`%${q}%`; params.push(l,l); }
     params.push(Number(limit), Number(offset));
 
     const [rows] = await pool.query(
@@ -216,17 +216,16 @@ router.get("/audit-logs", requireAuth, adminOnly, async (req, res) => {
 });
 
 // ─── GET /api/admin/revenue ───────────────────────────────────────────────────
-// PostgreSQL: TO_CHAR() instead of DATE_FORMAT(), CURRENT_DATE - INTERVAL instead of DATE_SUB/CURDATE
 router.get("/revenue", requireAuth, adminOnly, async (_req, res) => {
   try {
     const [monthly] = await pool.query(
-      `SELECT TO_CHAR(paid_date, 'YYYY-MM') AS month,
+      `SELECT DATE_FORMAT(paid_date, '%Y-%m') AS month,
               SUM(amount) AS total,
               COUNT(*) AS transactions
        FROM nivaas_rent_payments
        WHERE status='paid'
-         AND paid_date >= CURRENT_DATE - INTERVAL '12 months'
-       GROUP BY month ORDER BY month ASC`
+         AND paid_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+       GROUP BY DATE_FORMAT(paid_date, '%Y-%m') ORDER BY month ASC`
     );
     const [byCity] = await pool.query(
       `SELECT p.city, SUM(rp.amount) AS total

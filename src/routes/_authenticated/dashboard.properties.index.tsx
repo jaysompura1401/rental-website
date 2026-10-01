@@ -14,6 +14,7 @@ import {
 import { properties as propertiesApi, type ApiProperty } from "@/lib/api";
 import { formatINR } from "@/lib/mock-properties";
 import { calculatePropertyScore } from "@/lib/property-score";
+import { removePropertyFromHistory } from "@/lib/view-history";
 import { cn } from "@/lib/utils";
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
@@ -57,6 +58,8 @@ function MyProperties() {
     setDeletingId(id);
     try {
       await propertiesApi.delete(id);
+      // Also purge from "Recently Viewed" localStorage so it doesn't linger
+      removePropertyFromHistory(id);
       toast.success("Property deleted.");
       setProps(prev => prev.filter(p => p.id !== id));
     } catch (err: unknown) {

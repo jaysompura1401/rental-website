@@ -72,6 +72,25 @@ export function getRecentlyViewed(withinHours = 72): ViewedProperty[] {
   return getViewedProperties().filter(v => new Date(v.viewed_at).getTime() > cutoff);
 }
 
+/** Remove a single property from view history (e.g. after owner deletes it) */
+export function removePropertyFromHistory(propertyId: string): void {
+  try {
+    const updated = getViewedProperties().filter(v => v.id !== propertyId);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    // Notify listeners so RecentlyViewedSection re-renders immediately
+    window.dispatchEvent(new CustomEvent("nivaas_property_viewed"));
+  } catch { /* ignore */ }
+}
+
+/** Remove multiple properties from view history at once */
+export function removePropertiesFromHistory(ids: Set<string>): void {
+  try {
+    const updated = getViewedProperties().filter(v => !ids.has(v.id));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent("nivaas_property_viewed"));
+  } catch { /* ignore */ }
+}
+
 /** Clear all view history (e.g. on sign-out) */
 export function clearViewHistory(): void {
   try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }

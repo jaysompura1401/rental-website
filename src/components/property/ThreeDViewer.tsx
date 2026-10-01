@@ -5,18 +5,7 @@
  *
  *  "link"         → <iframe> embed (Matterport, Kuula, etc.)
  *  "model"        → Google <model-viewer> CDN web component (GLB/GLTF)
- *  "ai_generated" → Pannellum CDN equirectangular sphere viewer (true 360°)
- *
- * PanoramaViewer uses pannellum (https://pannellum.org) loaded from CDN.
- * Pannellum renders the equirectangular image onto a WebGL sphere so the
- * user truly stands at the centre of the room and looks in any direction.
- * It handles drag (mouse + touch), zoom (pinch + scroll), and fullscreen.
- *
- * CDN files loaded once per page:
- *   https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js
- *   https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css
- *
- * Works with both blob: URLs (local preview) and https: Supabase Storage URLs.
+ *  "ai_generated" → Pannellum CDN equirectangular sphere viewer (true 360°) with CSS fallback
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -52,7 +41,7 @@ let pannellumReady = false;
 const pannellumReadyCallbacks: Array<() => void> = [];
 
 function ensurePannellum(onReady: () => void) {
-  if (pannellumReady) { onReady(); return; }
+  if (pannellumReady && window.pannellum) { onReady(); return; }
   pannellumReadyCallbacks.push(onReady);
   if (pannellumInjected) return;
   pannellumInjected = true;
@@ -72,6 +61,11 @@ function ensurePannellum(onReady: () => void) {
   script.src = "https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js";
   script.onload = () => {
     pannellumReady = true;
+    pannellumReadyCallbacks.forEach(cb => cb());
+    pannellumReadyCallbacks.length = 0;
+  };
+  script.onerror = () => {
+    // CDN error - execute callbacks anyway so fallback triggers
     pannellumReadyCallbacks.forEach(cb => cb());
     pannellumReadyCallbacks.length = 0;
   };
@@ -110,7 +104,7 @@ export function ThreeDViewer({
 }
 
 // =============================================================================
-// 1. External link iframe (unchanged)
+// 1. External link iframe
 // =============================================================================
 function LinkViewer({ url, title, height }: { url: string; title: string; height: string }) {
   const [loaded, setLoaded] = useState(false);
@@ -158,7 +152,7 @@ function LinkViewer({ url, title, height }: { url: string; title: string; height
 }
 
 // =============================================================================
-// 2. GLB / GLTF model viewer (unchanged)
+// 2. GLB / GLTF model viewer
 // =============================================================================
 function ModelViewer({ url, title, height }: { url: string; title: string; height: string }) {
   const [ready, setReady] = useState(false);
@@ -203,15 +197,7 @@ function ModelViewer({ url, title, height }: { url: string; title: string; heigh
 }
 
 // =============================================================================
-// 3. True 360° Panorama Viewer — Pannellum equirectangular sphere
-//
-// Pannellum maps the equirectangular image onto a WebGL sphere.
-// The user stands at the centre and can look in any direction — exactly the
-// experience of being inside the room. Drag rotates the view; pinch/scroll
-// zooms; the image wraps continuously at the 360° seam.
-//
-// Pannellum's own controls (drag + pinch) are used directly; we overlay
-// our own zoom/reset/fullscreen buttons for visual consistency.
+// 3. True 360° Panorama Viewer with seamless fallback
 // =============================================================================
 function PanoramaViewer({
   url,
@@ -226,8 +212,13 @@ function PanoramaViewer({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const viewerRef = useRef<any>(null);
 
-  const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
+  const [status, setStatus] = useState<"loading" | "ok" | "fallback">("loading");
   const [full, setFull] = useState(false);
+  const [posX, setPosX] = useState(0);
+  const [zoom, setZoom] = useState(100);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const currentPosX = useRef(0);
 
   // ── Build / rebuild pannellum viewer whenever url changes ─────────────────
   useEffect(() => {
@@ -238,12 +229,22 @@ function PanoramaViewer({
     let destroyed = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let resizeObserver: ResizeObserver | null = null;
 
-    // Destroy previous viewer instance if any
+    const triggerResize = () => {
+      try {
+        if (viewerRef.current?.resize) {
+          viewerRef.current.resize();
+        }
+        window.dispatchEvent(new Event("resize"));
+      } catch { /* ignore */ }
+    };
+
     const destroy = () => {
       destroyed = true;
-      if (pollTimer)    clearInterval(pollTimer);
-      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (pollTimer)      clearInterval(pollTimer);
+      if (timeoutTimer)   clearTimeout(timeoutTimer);
+      if (resizeObserver) resizeObserver.disconnect();
       try { viewerRef.current?.destroy(); } catch { /* ignore */ }
       viewerRef.current = null;
     };
@@ -252,7 +253,11 @@ function PanoramaViewer({
       const container = containerRef.current;
       if (!container || destroyed) return;
 
-      // Clear and reset the container div so pannellum gets a clean element
+      if (!window.pannellum) {
+        setStatus("fallback");
+        return;
+      }
+
       container.innerHTML = "";
 
       try {
@@ -260,7 +265,7 @@ function PanoramaViewer({
           type:           "equirectangular",
           panorama:       url,
           autoLoad:       true,
-          autoRotate:     -1,      // deg/s, stops on any interaction
+          autoRotate:     -1,
           autoRotateInactivityDelay: 3000,
           compass:              false,
           showZoomCtrl:         false,
@@ -273,18 +278,36 @@ function PanoramaViewer({
           maxHfov: 150,
           pitch:   0,
           yaw:     0,
-          // onLoad fires when pannellum finishes drawing the first frame
           onLoad: () => {
-            if (!destroyed) setStatus("ok");
+            if (!destroyed) {
+              setStatus("ok");
+              requestAnimationFrame(() => {
+                triggerResize();
+                setTimeout(triggerResize, 100);
+                setTimeout(triggerResize, 300);
+              });
+            }
           },
-          onError: () => {
-            if (!destroyed) setStatus("error");
+          onError: (err: unknown) => {
+            console.warn("[PanoramaViewer] Pannellum error:", err);
+            if (!destroyed) setStatus("fallback");
           },
         });
 
-        // Polling fallback: pannellum's onLoad sometimes doesn't fire for
-        // data: URLs in certain browser versions. Poll until the WebGL canvas
-        // appears inside the container or 10 s timeout.
+        // Watch container size changes and keep Pannellum canvas in sync
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => {
+            if (!destroyed) triggerResize();
+          });
+          resizeObserver.observe(container);
+        }
+
+        // Trigger immediate resize sequence
+        setTimeout(triggerResize, 50);
+        setTimeout(triggerResize, 150);
+        setTimeout(triggerResize, 500);
+
+        // Polling check to confirm canvas exists and is rendered
         pollTimer = setInterval(() => {
           if (destroyed) { clearInterval(pollTimer!); return; }
           const gl = container.querySelector("canvas");
@@ -292,54 +315,95 @@ function PanoramaViewer({
             clearInterval(pollTimer!);
             pollTimer = null;
             setStatus("ok");
+            triggerResize();
           }
-        }, 200);
+        }, 150);
 
-        // Hard timeout — show error if nothing renders in 15 s
+        // Fallback timeout after 6s
         timeoutTimer = setTimeout(() => {
           if (destroyed) return;
-          clearInterval(pollTimer!);
-          pollTimer = null;
-          setStatus(prev => prev === "loading" ? "error" : prev);
-        }, 15000);
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+          setStatus(prev => (prev === "loading" ? "fallback" : prev));
+        }, 6000);
 
       } catch (e) {
-        console.error("[PanoramaViewer] pannellum init error:", e);
-        if (!destroyed) setStatus("error");
+        console.warn("[PanoramaViewer] Pannellum failed, activating interactive fallback:", e);
+        if (!destroyed) setStatus("fallback");
       }
     });
 
     return destroy;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url]);
 
   // ── Sync full-screen height with state ────────────────────────────────────
   useEffect(() => {
-    const handler = () => setFull(!!document.fullscreenElement);
+    const handler = () => {
+      setFull(!!document.fullscreenElement);
+      setTimeout(() => {
+        try { viewerRef.current?.resize?.(); } catch { /* ignore */ }
+      }, 100);
+    };
     document.addEventListener("fullscreenchange", handler);
     return () => document.removeEventListener("fullscreenchange", handler);
   }, []);
 
+  // ── Fallback Pan handlers ─────────────────────────────────────────────────
+  const handleMouseDown = (e: React.MouseEvent) => {
+    isDragging.current = true;
+    startX.current = e.clientX;
+  };
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging.current) return;
+    const dx = e.clientX - startX.current;
+    startX.current = e.clientX;
+    currentPosX.current += dx;
+    setPosX(currentPosX.current);
+  };
+  const handleMouseUp = () => { isDragging.current = false; };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      isDragging.current = true;
+      startX.current = e.touches[0].clientX;
+    }
+  };
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isDragging.current || e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - startX.current;
+    startX.current = e.touches[0].clientX;
+    currentPosX.current += dx;
+    setPosX(currentPosX.current);
+  };
+  const handleTouchEnd = () => { isDragging.current = false; };
+
   // ── Control handlers ──────────────────────────────────────────────────────
   const zoomIn = () => {
-    const v = viewerRef.current;
-    if (!v) return;
-    v.setHfov(Math.max(30, v.getHfov() - 15));
+    if (viewerRef.current) {
+      viewerRef.current.setHfov(Math.max(30, viewerRef.current.getHfov() - 15));
+    } else {
+      setZoom(z => Math.min(180, z + 20));
+    }
   };
   const zoomOut = () => {
-    const v = viewerRef.current;
-    if (!v) return;
-    v.setHfov(Math.min(150, v.getHfov() + 15));
+    if (viewerRef.current) {
+      viewerRef.current.setHfov(Math.min(150, viewerRef.current.getHfov() + 15));
+    } else {
+      setZoom(z => Math.max(80, z - 20));
+    }
   };
   const resetView = () => {
-    const v = viewerRef.current;
-    if (!v) return;
-    v.setYaw(0);
-    v.setPitch(0);
-    v.setHfov(100);
+    if (viewerRef.current) {
+      viewerRef.current.setYaw(0);
+      viewerRef.current.setPitch(0);
+      viewerRef.current.setHfov(100);
+    } else {
+      currentPosX.current = 0;
+      setPosX(0);
+      setZoom(100);
+    }
   };
   const toggleFullscreen = () => {
-    const el = containerRef.current;
+    const el = containerRef.current?.parentElement;
     if (!el) return;
     if (!document.fullscreenElement) {
       el.requestFullscreen?.().catch(() => {});
@@ -350,14 +414,14 @@ function PanoramaViewer({
 
   return (
     <div
-      className="relative rounded-2xl overflow-hidden border"
+      className="relative rounded-2xl overflow-hidden border select-none w-full"
       style={{
         height: full ? "100vh" : height,
         borderColor: "#e8d9c0",
         backgroundColor: "#1a1209",
       }}
     >
-      {/* Loading overlay */}
+      {/* Loading overlay — sits on top without hiding container from DOM */}
       {status === "loading" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 pointer-events-none"
@@ -368,37 +432,43 @@ function PanoramaViewer({
         </div>
       )}
 
-      {/* Error state */}
-      {status === "error" && (
-        <div
-          className="absolute inset-0 flex flex-col items-center justify-center gap-2 z-10"
-          style={{ backgroundColor: "#1a1209" }}
-        >
-          <span className="text-3xl">🌐</span>
-          <p className="text-sm font-medium text-white/70">Could not load panorama</p>
-          <p className="text-xs text-white/40">The image may still be processing — try again shortly</p>
-        </div>
-      )}
-
-      {/* Pannellum mounts here — it fills the container div */}
+      {/* Pannellum WebGL element — always kept in DOM so width/height are measurable */}
       <div
         ref={containerRef}
-        className="w-full h-full"
-        style={{ display: status === "error" ? "none" : "block" }}
+        className={`w-full h-full ${status === "fallback" ? "hidden" : "block"}`}
       />
 
-      {/* Our control overlay — shown once loaded */}
-      {status === "ok" && (
+      {/* Fallback CSS 360 Interactive Viewer (if WebGL/Pannellum fails) */}
+      {status === "fallback" && (
+        <div
+          className="w-full h-full cursor-grab active:cursor-grabbing transition-transform duration-75"
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          style={{
+            backgroundImage: `url(${url})`,
+            backgroundRepeat: "repeat-x",
+            backgroundSize: `${zoom}% 100%`,
+            backgroundPosition: `${posX}px center`,
+          }}
+        />
+      )}
+
+      {/* Control overlay */}
+      {(status === "ok" || status === "fallback") && (
         <>
-          {/* Bottom-right: zoom / reset / fullscreen */}
           <div className="absolute bottom-3 right-3 flex gap-2 z-20">
-            <ControlBtn onClick={zoomIn}          title="Zoom in">
+            <ControlBtn onClick={zoomIn} title="Zoom in">
               <ZoomIn className="h-4 w-4" />
             </ControlBtn>
-            <ControlBtn onClick={zoomOut}         title="Zoom out">
+            <ControlBtn onClick={zoomOut} title="Zoom out">
               <ZoomOut className="h-4 w-4" />
             </ControlBtn>
-            <ControlBtn onClick={resetView}       title="Reset view">
+            <ControlBtn onClick={resetView} title="Reset view">
               <RotateCcw className="h-4 w-4" />
             </ControlBtn>
             <ControlBtn onClick={toggleFullscreen} title={full ? "Exit fullscreen" : "Fullscreen"}>
@@ -406,12 +476,11 @@ function PanoramaViewer({
             </ControlBtn>
           </div>
 
-          {/* Bottom-center hint */}
           <div
             className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-xs font-medium text-white pointer-events-none select-none"
             style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}
           >
-            Drag to look around · Pinch or buttons to zoom
+            Drag horizontally to look around 360°
           </div>
         </>
       )}

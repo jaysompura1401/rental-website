@@ -17,7 +17,7 @@ import {
   Search, CalendarDays, Wallet, Home as HomeIcon, ArrowRight,
   ChevronDown, X, ShieldCheck, UserCheck, Key, MapPin, Building2, Bed,
   Users, Layers, Sparkles, Clock, Eye, Award, Building, Sparkle,
-  Navigation, Loader2, ChevronRight, Phone, ExternalLink, History, LayoutGrid,
+  Navigation, Loader2, ChevronRight, ChevronLeft, Phone, ExternalLink, History, LayoutGrid,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -263,47 +263,64 @@ function HomeInviteCard({ onGetMatches }: { onGetMatches: () => void }) {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
   return (
-    <div className="max-w-[1536px] mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 -mt-6 mb-10">
+    <div className="max-w-[1536px] mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 mt-2 sm:-mt-6 mb-6 sm:mb-10">
       <div
-        className="relative overflow-hidden rounded-3xl border px-6 py-6 sm:px-8 sm:py-7"
+        className="relative overflow-hidden rounded-2xl sm:rounded-3xl border p-3.5 sm:px-8 sm:py-7 shadow-xs"
         style={{ backgroundColor: "#fef9f0", borderColor: "#e8d9c0" }}
       >
+        {/* Top-right close button */}
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          className="absolute top-2.5 right-2.5 sm:top-4 sm:right-4 h-6 w-6 rounded-full flex items-center justify-center text-[#a08858] hover:text-[#1a1209] hover:bg-black/5 transition-all z-10"
+          title="Dismiss"
+          aria-label="Dismiss"
+        >
+          <X className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+        </button>
+
         {/* Decorative circles */}
-        <div className="pointer-events-none absolute -right-10 -top-10 h-44 w-44 rounded-full opacity-15" style={{ backgroundColor: "#C9921A" }} />
-        <div className="pointer-events-none absolute -right-4 bottom-0 h-28 w-28 rounded-full opacity-[0.08]" style={{ backgroundColor: "#C9921A" }} />
+        <div className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 sm:h-44 sm:w-44 rounded-full opacity-15" style={{ backgroundColor: "#C9921A" }} />
+        <div className="pointer-events-none absolute -right-4 bottom-0 h-20 w-20 sm:h-28 sm:w-28 rounded-full opacity-[0.08]" style={{ backgroundColor: "#C9921A" }} />
 
-        <div className="relative flex flex-col sm:flex-row sm:items-center gap-6">
-          {/* Icon */}
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl" style={{ backgroundColor: "#C9921A" }}>
-            <Sparkles className="h-7 w-7 text-white" />
+        <div className="relative flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-6">
+          {/* Left: Icon + Copy in horizontal flex on mobile */}
+          <div className="flex items-start sm:items-center gap-3 flex-1 min-w-0 pr-6 sm:pr-0">
+            {/* Icon */}
+            <div
+              className="flex h-9 w-9 sm:h-14 sm:w-14 shrink-0 items-center justify-center rounded-xl sm:rounded-2xl shadow-xs"
+              style={{ backgroundColor: "#C9921A" }}
+            >
+              <Sparkles className="h-4.5 w-4.5 sm:h-7 sm:w-7 text-white" />
+            </div>
+
+            {/* Copy */}
+            <div className="flex-1 min-w-0">
+              <p className="font-extrabold text-sm sm:text-xl leading-tight text-[#1a1209]" style={{ fontFamily: "'Sora',sans-serif" }}>
+                Find properties made for you
+              </p>
+              <p className="mt-0.5 sm:mt-1.5 text-xs sm:text-sm leading-relaxed text-[#836737]">
+                <span className="sm:hidden">Answer 5 quick questions to get personalized matches ranked for you.</span>
+                <span className="hidden sm:inline">Answer 5 quick questions — budget, location, BHK, furnishing — and we'll rank every property by how well it matches your needs.</span>
+              </p>
+            </div>
           </div>
 
-          {/* Copy */}
-          <div className="flex-1 min-w-0">
-            <p className="font-extrabold text-lg sm:text-xl leading-tight" style={{ color: "#1a1209", fontFamily: "'Sora',sans-serif" }}>
-              Find properties made for you
-            </p>
-            <p className="mt-2 text-sm leading-relaxed" style={{ color: "#836737" }}>
-              Answer 5 quick questions — budget, location, BHK, furnishing — and we'll rank every property by how well it matches your needs.
-            </p>
-          </div>
-
-          {/* CTA */}
-          <div className="shrink-0 flex flex-col items-start sm:items-end gap-2.5">
+          {/* CTA Button */}
+          <div className="shrink-0 flex items-center justify-between sm:justify-end gap-2 pt-0.5 sm:pt-0">
             <button
               onClick={onGetMatches}
-              className="inline-flex items-center gap-2 rounded-full px-6 py-3 text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95"
-              style={{ backgroundColor: "#C9921A", boxShadow: "0 4px 16px rgba(201,146,26,0.35)" }}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 sm:px-6 sm:py-3 text-xs sm:text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95"
+              style={{ backgroundColor: "#C9921A", boxShadow: "0 4px 16px rgba(201,146,26,0.3)" }}
             >
-              <Sparkles className="h-4 w-4" />
-              Get my matches
+              <Sparkles className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span>Get my matches</span>
             </button>
             <button
               onClick={() => setDismissed(true)}
-              className="text-xs font-medium transition-colors hover:underline"
-              style={{ color: "#a08858" }}
+              className="sm:hidden text-xs font-medium text-[#a08858] hover:text-[#1a1209] transition-colors whitespace-nowrap px-2 py-1"
             >
-              No thanks, I'll browse manually
+              Dismiss
             </button>
           </div>
         </div>
@@ -314,7 +331,7 @@ function HomeInviteCard({ onGetMatches }: { onGetMatches: () => void }) {
 
 // ── Home component ────────────────────────────────────────────────────────────
 function Home() {
-  const [heroTab, setHeroTab]                 = useState<"Buy" | "Rent" | "PG / Co-living" | "Commercial">("Buy");
+  const [heroTab, setHeroTab]                 = useState<"Buy" | "Rent" | "PG / Co-living" | "Short-Term" | "Commercial">("Rent");
   const [locationInput, setLocationInput]     = useState("");
   const [showCitySuggest, setShowCitySuggest] = useState(false);
   const locationRef = useRef<HTMLDivElement>(null);
@@ -340,9 +357,15 @@ function Home() {
   const [featuredLoading, setFeaturedLoading] = useState(true);
   const featuredScrollRef = useRef<HTMLDivElement>(null);
 
+  // Short-term properties data
+  const [shortTermProps, setShortTermProps]     = useState<ApiProperty[]>([]);
+  const [shortTermLoading, setShortTermLoading] = useState(true);
+  const shortTermScrollRef = useRef<HTMLDivElement>(null);
+
   // Trending properties data
   const [trendingProps, setTrendingProps]     = useState<ApiProperty[]>([]);
   const [trendingLoading, setTrendingLoading] = useState(true);
+  const trendingScrollRef = useRef<HTMLDivElement>(null);
 
   // Dynamic popular search chips (top views_count properties)
   const [popularChips, setPopularChips] = useState<Array<{ label: string; city: string; q: string }>>([]);
@@ -432,6 +455,9 @@ function Home() {
         setFeaturedProps(allProps.slice(0, 6));
         setTrendingProps(allProps.slice(0, 4));
 
+        const st = allProps.filter(p => p.listing_type === "short_term");
+        if (st.length > 0) setShortTermProps(st);
+
         // Group properties by city to calculate exact real counts
         const map = new Map<string, { count: number; img: string }>();
         const countsObj: Record<string, number> = {};
@@ -500,6 +526,17 @@ function Home() {
         setTrendingLoading(false);
         setCityCardsLoading(false);
       });
+
+    propertiesApi.list({ listing_type: "short_term", limit: 50 })
+      .then(res => {
+        if (res.data && res.data.length > 0) {
+          setShortTermProps(res.data);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setShortTermLoading(false);
+      });
   }, []);
 
   // Close dropdowns on outside click
@@ -533,6 +570,7 @@ function Home() {
     if (heroTab === "Buy") params.set("listing_type", "sale");
     else if (heroTab === "Rent") params.set("listing_type", "rent");
     else if (heroTab === "PG / Co-living") params.set("listing_type", "pg");
+    else if (heroTab === "Short-Term") params.set("listing_type", "short_term");
     else if (heroTab === "Commercial") params.set("property_type", "Office Space");
 
     if (propertyType && propertyType !== "All Type") params.set("property_type", propertyType);
@@ -546,7 +584,17 @@ function Home() {
   };
 
   const scrollFeatured = (dir: "left" | "right") => {
-    featuredScrollRef.current?.scrollBy({ left: dir === "left" ? -340 : 340, behavior: "smooth" });
+    const amount = typeof window !== "undefined" && window.innerWidth < 640 ? 280 : 340;
+    featuredScrollRef.current?.scrollBy({ left: dir === "left" ? -amount : amount, behavior: "smooth" });
+  };
+
+  const scrollShortTerm = (dir: "left" | "right") => {
+    const amount = typeof window !== "undefined" && window.innerWidth < 640 ? 280 : 340;
+    shortTermScrollRef.current?.scrollBy({ left: dir === "left" ? -amount : amount, behavior: "smooth" });
+  };
+
+  const scrollTrending = (dir: "left" | "right") => {
+    trendingScrollRef.current?.scrollBy({ left: dir === "left" ? -240 : 240, behavior: "smooth" });
   };
 
   // Combine DB cities + popular landmark cities list
@@ -571,7 +619,7 @@ function Home() {
       )}
 
       {/* ── 1. HERO SECTION (Theme Background matching Website) ─────────────────── */}
-      <section className="relative overflow-hidden min-h-[calc(100vh-56px)] sm:min-h-[calc(100vh-64px)] flex flex-col justify-center pt-10 pb-20 sm:pt-16 sm:pb-28 lg:pt-20 lg:pb-32 bg-[#FAF6EE] text-[#1a1209]">
+      <section className="relative overflow-hidden min-h-0 sm:min-h-[calc(100vh-64px)] flex flex-col justify-start sm:justify-center pt-2 pb-4 sm:pt-16 sm:pb-28 lg:pt-20 lg:pb-32 bg-[#FAF6EE] text-[#1a1209]">
         {/* Building Sketch Background — Full width */}
         <div
           className="pointer-events-none absolute inset-0"
@@ -584,11 +632,11 @@ function Home() {
         />
 
 
-        <div className="relative z-10 max-w-[1536px] mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+        <div className="relative z-10 max-w-[1536px] mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-6 lg:gap-8 items-center">
           
           {/* Left Column: Heading + Subtitle + 3 Feature Badges */}
-          <div className="lg:col-span-6 flex flex-col items-start gap-4">
-            <h1 className="text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-extrabold leading-tight tracking-tight text-[#1a1209] font-display" style={{ fontFamily: "'Sora', sans-serif" }}>
+          <div className="lg:col-span-6 flex flex-col items-start gap-1.5 sm:gap-4">
+            <h1 className="text-2xl sm:text-4xl lg:text-5xl xl:text-6xl font-extrabold leading-[1.15] sm:leading-tight tracking-tight text-[#1a1209] font-display" style={{ fontFamily: "'Sora', sans-serif" }}>
               Find a place<br />
               you'll love to<br />
               <span className="text-[#C9921A] inline-inline relative min-h-[1.2em]">
@@ -596,45 +644,63 @@ function Home() {
                 <span className="inline-block w-[3px] h-[0.75em] bg-[#C9921A] ml-1 align-baseline animate-pulse" />
               </span>
             </h1>
-            <p className="text-sm sm:text-base text-[#7c6840] font-medium max-w-lg mt-1">
-              Verified Listings. Genuine Owners. Hassle-free Living.
+
+            {/* Subtitle text - compact single line on mobile */}
+            <p className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[11px] sm:text-base text-[#4a351a] font-medium max-w-lg mt-0.5 sm:mt-1 tracking-tight">
+              <span className="text-[#1a1209] font-semibold">Verified Listings</span>
+              <span className="text-[#C9921A] font-bold text-[10px] sm:text-xs select-none">•</span>
+              <span className="text-[#1a1209] font-semibold">Genuine Owners</span>
+              <span className="text-[#C9921A] font-bold text-[10px] sm:text-xs select-none">•</span>
+              <span className="text-[#1a1209] font-semibold">Hassle-free Living</span>
             </p>
 
-            {/* Feature Points Row */}
-            <div className="flex flex-wrap items-center gap-4 sm:gap-6 mt-4 pt-4 border-t border-[#e8d9c0]">
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-full border border-[#e8d9c0] bg-[#fef3d4] text-[#C9921A]">
-                  <ShieldCheck className="h-4 w-4" />
+            {/* Feature Points Row - streamlined single horizontal row on mobile, wrapping without scrollbar on desktop */}
+            <div
+              className="flex items-center gap-1.5 sm:gap-3 mt-0.5 sm:mt-3 pt-1 sm:pt-3 border-t border-[#e8d9c0]/60 sm:border-[#e8d9c0]/80 overflow-x-auto sm:overflow-visible sm:flex-wrap scrollbar-hide no-scrollbar w-full py-0.5"
+              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+            >
+              <div className="inline-flex items-center gap-1 sm:gap-2 px-2 py-0.5 sm:px-3.5 sm:py-1.5 rounded-full bg-white/90 backdrop-blur-md border border-[#e2d2b8] shadow-[0_2px_8px_-2px_rgba(26,18,9,0.06)] hover:border-[#C9921A] hover:bg-white transition-all shrink-0">
+                <div className="flex h-4 w-4 sm:h-6 sm:w-6 items-center justify-center rounded-full bg-gradient-to-br from-[#FFF3D6] to-[#FDE199] text-[#9E6D08] border border-[#E9CE8A]/60 shadow-2xs">
+                  <ShieldCheck className="h-2.5 w-2.5 sm:h-3.5 sm:w-3.5 text-[#9E6D08]" />
                 </div>
-                <span className="text-xs sm:text-sm font-semibold text-[#1a1209]">100% Verified Listings</span>
+                <span className="text-[11px] sm:text-[13px] font-bold text-[#1a1209] tracking-tight whitespace-nowrap">
+                  <span className="sm:hidden">100% Verified</span>
+                  <span className="hidden sm:inline">100% Verified Listings</span>
+                </span>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-full border border-[#e8d9c0] bg-[#fef3d4] text-[#C9921A]">
-                  <UserCheck className="h-4 w-4" />
+              <div className="inline-flex items-center gap-1 sm:gap-2 px-2 py-0.5 sm:px-3.5 sm:py-1.5 rounded-full bg-white/90 backdrop-blur-md border border-[#e2d2b8] shadow-[0_2px_8px_-2px_rgba(26,18,9,0.06)] hover:border-[#C9921A] hover:bg-white transition-all shrink-0">
+                <div className="flex h-4 w-4 sm:h-6 sm:w-6 items-center justify-center rounded-full bg-gradient-to-br from-[#FFF3D6] to-[#FDE199] text-[#9E6D08] border border-[#E9CE8A]/60 shadow-2xs">
+                  <UserCheck className="h-2.5 w-2.5 sm:h-3.5 sm:w-3.5 text-[#9E6D08]" />
                 </div>
-                <span className="text-xs sm:text-sm font-semibold text-[#1a1209]">Direct Contact with Owners</span>
+                <span className="text-[11px] sm:text-[13px] font-bold text-[#1a1209] tracking-tight whitespace-nowrap">
+                  <span className="sm:hidden">Direct Owners</span>
+                  <span className="hidden sm:inline">Direct Contact with Owners</span>
+                </span>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-full border border-[#e8d9c0] bg-[#fef3d4] text-[#C9921A]">
-                  <Key className="h-4 w-4" />
+              <div className="inline-flex items-center gap-1 sm:gap-2 px-2 py-0.5 sm:px-3.5 sm:py-1.5 rounded-full bg-white/90 backdrop-blur-md border border-[#e2d2b8] shadow-[0_2px_8px_-2px_rgba(26,18,9,0.06)] hover:border-[#C9921A] hover:bg-white transition-all shrink-0">
+                <div className="flex h-4 w-4 sm:h-6 sm:w-6 items-center justify-center rounded-full bg-gradient-to-br from-[#FFF3D6] to-[#FDE199] text-[#9E6D08] border border-[#E9CE8A]/60 shadow-2xs">
+                  <Key className="h-2.5 w-2.5 sm:h-3.5 sm:w-3.5 text-[#9E6D08]" />
                 </div>
-                <span className="text-xs sm:text-sm font-semibold text-[#1a1209]">Zero Brokerage Options</span>
+                <span className="text-[11px] sm:text-[13px] font-bold text-[#1a1209] tracking-tight whitespace-nowrap">
+                  <span className="sm:hidden">Zero Brokerage</span>
+                  <span className="hidden sm:inline">Zero Brokerage Options</span>
+                </span>
               </div>
             </div>
           </div>
 
           {/* Right Column: Floating Luxury Golden Search Card */}
           <div className="lg:col-span-6 w-full">
-            <div className="rounded-3xl bg-gradient-to-br from-[#BC8415] via-[#AB740E] to-[#916007] p-4 sm:p-6 shadow-[0_20px_50px_-10px_rgba(171,116,14,0.45),0_10px_25px_-5px_rgba(0,0,0,0.15)] border border-[#C9921A]/60">
+            <div className="rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#BC8415] via-[#AB740E] to-[#916007] p-3 sm:p-6 shadow-[0_20px_50px_-10px_rgba(171,116,14,0.45),0_10px_25px_-5px_rgba(0,0,0,0.15)] border border-[#C9921A]/60">
               
               {/* Category Tabs inside Card */}
-              <div className="flex items-center gap-4 sm:gap-6 border-b border-white/25 pb-3 mb-5 overflow-x-auto scrollbar-hide">
-                {(["Buy", "Rent", "PG / Co-living", "Commercial"] as const).map(tab => (
+              <div className="flex items-center gap-3 sm:gap-6 border-b border-white/25 pb-2 mb-3 sm:pb-3 sm:mb-5 overflow-x-auto scrollbar-hide">
+                {(["Buy", "Rent", "PG / Co-living", "Short-Term", "Commercial"] as const).map(tab => (
                   <button
                     key={tab}
                     type="button"
                     onClick={() => setHeroTab(tab)}
-                    className={`relative pb-2 text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
+                    className={`relative pb-1.5 sm:pb-2 text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
                       heroTab === tab ? "text-white font-extrabold drop-shadow-xs" : "text-white/80 hover:text-white"
                     }`}
                   >
@@ -646,16 +712,16 @@ function Home() {
                 ))}
               </div>
 
-              {/* Form inputs grid */}
-              <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Form inputs grid - 2 columns on mobile so all 4 fit in 2 rows */}
+              <form onSubmit={handleSubmit} className="flex flex-col gap-2 sm:gap-3">
+                <div className="grid grid-cols-2 gap-2 sm:gap-3">
                   
                   {/* Location Field */}
-                  <div ref={locationRef} className="relative rounded-2xl bg-white p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Location</label>
-                    <div className="flex items-center justify-between mt-1">
-                      <div className="flex items-center gap-2 min-w-0 w-full">
-                        <MapPin className="h-4 w-4 text-[#C9921A] shrink-0" />
+                  <div ref={locationRef} className="relative rounded-xl sm:rounded-2xl bg-white p-2 sm:p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
+                    <label className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Location</label>
+                    <div className="flex items-center justify-between mt-0.5 sm:mt-1">
+                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 w-full">
+                        <MapPin className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
                         <input
                           type="text"
                           value={locationInput}
@@ -669,11 +735,11 @@ function Home() {
                             className="shrink-0 text-[#a08858] hover:text-[#1a1209] text-xs leading-none">✕</button>
                         )}
                       </div>
-                      <ChevronDown className="h-4 w-4 text-[#a08858] shrink-0 ml-1" onClick={() => setShowCitySuggest(o => !o)} style={{ cursor: "pointer" }} />
+                      <ChevronDown className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#a08858] shrink-0 ml-1" onClick={() => setShowCitySuggest(o => !o)} style={{ cursor: "pointer" }} />
                     </div>
 
                     {showCitySuggest && citySuggestions.length > 0 && (
-                      <div className="absolute top-full left-0 right-0 mt-2 rounded-2xl bg-white py-1 z-50 shadow-2xl max-h-60 overflow-y-auto border border-[#e8d9c0]">
+                      <div className="absolute top-full left-0 w-[calc(200%+0.5rem)] sm:w-full mt-1.5 sm:mt-2 rounded-xl sm:rounded-2xl bg-white py-1 z-50 shadow-2xl max-h-56 overflow-y-auto border border-[#e8d9c0]">
                         {/* "All cities" option */}
                         <button
                           type="button"
@@ -699,18 +765,18 @@ function Home() {
                   </div>
 
                   {/* Property Type Field */}
-                  <div ref={propTypeRef} className="relative rounded-2xl bg-white p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Property Type</label>
-                    <div className="flex items-center justify-between mt-1 cursor-pointer" onClick={() => setShowPropType(o => !o)}>
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Building2 className="h-4 w-4 text-[#C9921A] shrink-0" />
+                  <div ref={propTypeRef} className="relative rounded-xl sm:rounded-2xl bg-white p-2 sm:p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
+                    <label className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Property Type</label>
+                    <div className="flex items-center justify-between mt-0.5 sm:mt-1 cursor-pointer" onClick={() => setShowPropType(o => !o)}>
+                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                        <Building2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
                         <span className="text-xs sm:text-sm font-bold text-[#1a1209] truncate">{propertyType}</span>
                       </div>
-                      <ChevronDown className="h-4 w-4 text-[#a08858] shrink-0" />
+                      <ChevronDown className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#a08858] shrink-0" />
                     </div>
 
                     {showPropType && (
-                      <div className="absolute top-full left-0 right-0 mt-2 rounded-2xl bg-white py-1 z-50 shadow-2xl border border-[#e8d9c0]">
+                      <div className="absolute top-full right-0 sm:left-0 w-[calc(200%+0.5rem)] sm:w-full mt-1.5 sm:mt-2 rounded-xl sm:rounded-2xl bg-white py-1 z-50 shadow-2xl border border-[#e8d9c0]">
                         {["All Type", "Apartment", "Villa", "PG", "Office Space", "Plot"].map(type => (
                           <button
                             key={type}
@@ -726,17 +792,18 @@ function Home() {
                   </div>
 
                   {/* Budget Field */}
-                  <div ref={budgetRef} className="relative rounded-2xl bg-white p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">                    <label className="text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Budget</label>
-                    <div className="flex items-center justify-between mt-1 cursor-pointer" onClick={() => setShowBudget(o => !o)}>
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Wallet className="h-4 w-4 text-[#C9921A] shrink-0" />
+                  <div ref={budgetRef} className="relative rounded-xl sm:rounded-2xl bg-white p-2 sm:p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
+                    <label className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Budget</label>
+                    <div className="flex items-center justify-between mt-0.5 sm:mt-1 cursor-pointer" onClick={() => setShowBudget(o => !o)}>
+                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                        <Wallet className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
                         <span className="text-xs sm:text-sm font-bold text-[#1a1209] truncate">{budgetLabel}</span>
                       </div>
-                      <ChevronDown className="h-4 w-4 text-[#a08858] shrink-0" />
+                      <ChevronDown className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#a08858] shrink-0" />
                     </div>
 
                     {showBudget && (
-                      <div className="absolute top-full left-0 right-0 mt-2 rounded-2xl bg-white py-1 z-50 shadow-2xl border border-[#e8d9c0]">
+                      <div className="absolute top-full left-0 w-[calc(200%+0.5rem)] sm:w-full mt-1.5 sm:mt-2 rounded-xl sm:rounded-2xl bg-white py-1 z-50 shadow-2xl border border-[#e8d9c0]">
                         {BUDGET_PRESETS.map(preset => (
                           <button
                             key={preset.label}
@@ -752,10 +819,10 @@ function Home() {
                   </div>
 
                   {/* Pincode Field */}
-                  <div className="rounded-2xl bg-white p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Pincode</label>
-                    <div className="flex items-center gap-2 mt-1">
-                      <MapPin className="h-4 w-4 text-[#C9921A] shrink-0" />
+                  <div className="rounded-xl sm:rounded-2xl bg-white p-2 sm:p-3 border border-[#e8d9c0] shadow-2xs hover:border-[#C9921A] transition-colors">
+                    <label className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-[#a08858] block">Pincode</label>
+                    <div className="flex items-center gap-1.5 sm:gap-2 mt-0.5 sm:mt-1">
+                      <MapPin className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
                       <input
                         type="text"
                         inputMode="numeric"
@@ -777,7 +844,7 @@ function Home() {
                 {/* Submit Search Button */}
                 <button
                   type="submit"
-                  className="mt-2 w-full min-h-[48px] rounded-2xl bg-[#1a1209] hover:bg-black text-white font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.99] border border-black/20"
+                  className="mt-1.5 sm:mt-2 w-full min-h-[42px] sm:min-h-[48px] rounded-xl sm:rounded-2xl bg-[#1a1209] hover:bg-black text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.99] border border-black/20"
                 >
                   <Search className="h-4 w-4 text-[#C9921A]" />
                   <span>Search</span>
@@ -786,12 +853,15 @@ function Home() {
             </div>
 
             {/* Popular Searches Chips below card — dynamic, based on most-viewed properties */}
-            <div className="flex items-center gap-2 flex-wrap mt-4">
-              <span className="text-xs text-[#7c6840] font-bold">Popular Searches:</span>
+            <div
+              className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto sm:overflow-visible sm:flex-wrap scrollbar-hide no-scrollbar mt-2 sm:mt-4 py-0.5 w-full"
+              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+            >
+              <span className="text-[11px] sm:text-xs text-[#7c6840] font-bold shrink-0">Popular:</span>
               {popularChips.length === 0 ? (
                 // Skeleton placeholders while loading
                 Array.from({ length: 4 }).map((_, i) => (
-                  <span key={i} className="rounded-full bg-white/60 border border-[#e8d9c0] px-8 py-1 text-xs animate-pulse" style={{ minWidth: 90, display: "inline-block" }}>&nbsp;</span>
+                  <span key={i} className="rounded-full bg-white/60 border border-[#e8d9c0] px-6 py-0.5 text-xs animate-pulse shrink-0" style={{ minWidth: 80, display: "inline-block" }}>&nbsp;</span>
                 ))
               ) : (
                 popularChips.map(chip => (
@@ -802,7 +872,7 @@ function Home() {
                       setLocationInput(chip.city);
                       window.location.href = `/properties?city=${encodeURIComponent(chip.city)}&q=${encodeURIComponent(chip.q)}`;
                     }}
-                    className="rounded-full bg-white hover:bg-[#fef9f0] border border-[#e8d9c0] hover:border-[#C9921A] px-3 py-1 text-xs font-semibold text-[#1a1209] transition-colors shadow-xs"
+                    className="rounded-full bg-white hover:bg-[#fef9f0] border border-[#e8d9c0] hover:border-[#C9921A] px-2.5 py-0.5 sm:px-3 sm:py-1 text-[11px] sm:text-xs font-semibold text-[#1a1209] transition-colors shadow-xs shrink-0 whitespace-nowrap"
                   >
                     {chip.label}
                   </button>
@@ -817,28 +887,147 @@ function Home() {
       {/* ── Personalised match invite card ─────────────────────────────────── */}
       <HomeInviteCard onGetMatches={() => setShowWizard(true)} />
 
+      {/* ── SHORT-TERM PROPERTIES SECTION (MIRRORED LAYOUT) ────────────────── */}
+      <section className="px-4 sm:px-6 lg:px-10 xl:px-12 py-6 sm:py-14 max-w-[1536px] mx-auto w-full">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-8 items-start">
+          
+          {/* Left Column (Desktop): Carousel of Property Cards */}
+          <div className="order-2 lg:order-1 lg:col-span-8 relative">
+            {shortTermLoading ? (
+              <div className="flex gap-4 overflow-x-hidden">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="shrink-0 w-72 h-80 rounded-2xl bg-[#ede9fe]/40 animate-pulse" />
+                ))}
+              </div>
+            ) : shortTermProps.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#7C3AED]/30 p-8 text-center bg-[#faf5ff] flex flex-col items-center justify-center min-h-[220px]">
+                <span className="text-3xl mb-2">⏱️</span>
+                <p className="font-bold text-sm text-[#1a1209]">Short-Term Properties Coming Soon</p>
+                <p className="text-xs text-[#836737] mt-1 max-w-sm">Stay flexible with weekly bookings and fully furnished homes across Gujarat and beyond.</p>
+                <Link to="/properties" search={{ listing_type: "short_term" } as any} className="mt-4 px-5 py-2.5 rounded-full text-xs font-bold text-white bg-[#7C3AED] hover:bg-[#6d28d9] transition shadow-xs">
+                  Browse Short-Term Stays →
+                </Link>
+              </div>
+            ) : (
+              <div className="relative group">
+                {/* Navigation Arrows — on left and right sides of cards */}
+                <button
+                  type="button"
+                  onClick={() => scrollShortTerm("left")}
+                  className="flex absolute left-0.5 sm:-left-3 lg:-left-4 top-1/2 -translate-y-1/2 z-20 h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-full bg-white/95 backdrop-blur border border-[#e8d9c0] text-[#1a1209] hover:bg-[#ede9fe] hover:text-[#7C3AED] hover:border-[#7C3AED] transition-all shadow-[0_4px_16px_rgba(0,0,0,0.14)] hover:scale-105 active:scale-95 cursor-pointer"
+                  aria-label="Previous short-term property"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => scrollShortTerm("right")}
+                  className="flex absolute right-0.5 sm:-right-3 lg:-right-4 top-1/2 -translate-y-1/2 z-20 h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-full bg-white/95 backdrop-blur border border-[#e8d9c0] text-[#1a1209] hover:bg-[#ede9fe] hover:text-[#7C3AED] hover:border-[#7C3AED] transition-all shadow-[0_4px_16px_rgba(0,0,0,0.14)] hover:scale-105 active:scale-95 cursor-pointer"
+                  aria-label="Next short-term property"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+
+                {/* Cards Scroll Track with touch snap on mobile */}
+                <div
+                  ref={shortTermScrollRef}
+                  className="flex gap-3 sm:gap-5 overflow-x-auto pb-3 pt-1 px-4 -mx-4 sm:px-1 sm:mx-0 scrollbar-hide scroll-smooth snap-x snap-mandatory"
+                  style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+                >
+                  {shortTermProps.map(p => (
+                    <div key={p.id} className="shrink-0 w-[66vw] min-w-[220px] max-w-[245px] sm:w-[245px] snap-start">
+                      <PropertyCard p={p} fluid />
+                    </div>
+                  ))}
+                  {/* Trailing spacer for clean mobile edge padding */}
+                  <div className="w-4 sm:hidden shrink-0" aria-hidden="true" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right Column (Desktop): Heading + Subtitle + Button */}
+          <div className="order-1 lg:order-2 lg:col-span-4 flex flex-col items-start justify-between h-full lg:min-h-[200px]">
+            <div className="w-full">
+              <div className="flex items-center justify-between gap-2 mb-1 sm:mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-[#7C3AED] bg-[#ede9fe] px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 shadow-2xs">
+                    <span>⏱️</span> SHORT-TERM
+                  </span>
+                  <span className="h-0.5 w-6 sm:w-8 bg-[#7C3AED]" />
+                </div>
+
+                {/* Mobile View All Link */}
+                <Link
+                  to="/properties"
+                  search={{ listing_type: "short_term" } as any}
+                  className="lg:hidden inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] hover:underline"
+                >
+                  <span>View all</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+
+              <h2 className="text-xl sm:text-3xl font-extrabold text-[#1a1209] tracking-tight font-display leading-tight sm:leading-snug" style={{ fontFamily: "'Sora', sans-serif" }}>
+                Flexible short-term<br className="hidden sm:inline" /> stays for you
+              </h2>
+              <p className="text-xs sm:text-sm text-[#836737] font-medium mt-1 sm:mt-2 max-w-sm">
+                Fully furnished homes and apartments available for flexible stays from 1 week to 6 months.
+              </p>
+            </div>
+
+            {/* Desktop View All Button */}
+            <div className="hidden lg:flex mt-6 flex-col gap-4">
+              <Link
+                to="/properties"
+                search={{ listing_type: "short_term" } as any}
+                className="inline-flex items-center gap-2 rounded-full border border-[#7C3AED]/40 bg-white px-5 py-2.5 text-xs sm:text-sm font-bold text-[#7C3AED] transition-all hover:border-[#7C3AED] hover:bg-[#ede9fe] shadow-xs"
+              >
+                <span>View All Short-Term</span>
+                <ArrowRight className="h-4 w-4 text-[#7C3AED]" />
+              </Link>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
       {/* ── 2. FEATURED PROPERTIES SECTION ─────────────────────────────── */}
-      <section className="px-4 sm:px-6 lg:px-10 xl:px-12 py-10 sm:py-14 max-w-[1536px] mx-auto w-full">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      <section className="px-4 sm:px-6 lg:px-10 xl:px-12 py-6 sm:py-14 max-w-[1536px] mx-auto w-full border-t border-[#e8d9c0]/60">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-8 items-start">
           
           {/* Left Column: Heading + Button + Nav arrows */}
-          <div className="lg:col-span-4 flex flex-col items-start justify-between h-full min-h-[220px]">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-[#a08858]">
-                  FEATURED PROPERTIES
-                </span>
-                <span className="h-0.5 w-8 bg-[#C9921A]" />
+          <div className="lg:col-span-4 flex flex-col items-start justify-between h-full lg:min-h-[220px]">
+            <div className="w-full">
+              <div className="flex items-center justify-between gap-2 mb-1 sm:mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-[#a08858]">
+                    FEATURED PROPERTIES
+                  </span>
+                  <span className="h-0.5 w-6 sm:w-8 bg-[#C9921A]" />
+                </div>
+
+                {/* Mobile View All Link */}
+                <Link
+                  to="/properties"
+                  className="lg:hidden inline-flex items-center gap-1 text-xs font-bold text-[#C9921A] hover:underline"
+                >
+                  <span>View all</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
               </div>
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1a1209] tracking-tight font-display leading-snug" style={{ fontFamily: "'Sora', sans-serif" }}>
-                Handpicked homes<br />for you
+
+              <h2 className="text-xl sm:text-3xl font-extrabold text-[#1a1209] tracking-tight font-display leading-tight sm:leading-snug" style={{ fontFamily: "'Sora', sans-serif" }}>
+                Handpicked homes<br className="hidden sm:inline" /> for you
               </h2>
-              <p className="text-xs sm:text-sm text-[#a08858] font-medium mt-2 max-w-sm">
+              <p className="text-xs sm:text-sm text-[#a08858] font-medium mt-1 sm:mt-2 max-w-sm">
                 Explore premium properties that match your lifestyle and preferences.
               </p>
             </div>
 
-            <div className="mt-6 flex flex-col gap-4">
+            {/* Desktop Actions & Control Arrows */}
+            <div className="hidden lg:flex mt-6 flex-col gap-4">
               <Link
                 to="/properties"
                 className="inline-flex items-center gap-2 rounded-full border border-[#C9921A]/40 bg-white px-5 py-2.5 text-xs sm:text-sm font-bold text-[#1a1209] transition-all hover:border-[#C9921A] hover:bg-[#fef9f0] shadow-xs"
@@ -851,7 +1040,7 @@ function Home() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => scrollFeatured("left")}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white border border-[#e8d9c0] text-[#1a1209] hover:bg-[#fef9f0] transition-colors shadow-xs"
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white border border-[#e8d9c0] text-[#1a1209] hover:bg-[#fef9f0] transition-colors shadow-xs cursor-pointer"
                   aria-label="Previous property"
                 >
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
@@ -860,7 +1049,7 @@ function Home() {
                 </button>
                 <button
                   onClick={() => scrollFeatured("right")}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white border border-[#e8d9c0] text-[#1a1209] hover:bg-[#fef9f0] transition-colors shadow-xs"
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white border border-[#e8d9c0] text-[#1a1209] hover:bg-[#fef9f0] transition-colors shadow-xs cursor-pointer"
                   aria-label="Next property"
                 >
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
@@ -872,7 +1061,7 @@ function Home() {
           </div>
 
           {/* Right Column: Carousel of Property Cards */}
-          <div className="lg:col-span-8 overflow-hidden">
+          <div className="lg:col-span-8 overflow-visible">
             {featuredLoading ? (
               <div className="flex gap-4 overflow-x-hidden">
                 {Array.from({ length: 4 }).map((_, i) => (
@@ -880,15 +1069,39 @@ function Home() {
                 ))}
               </div>
             ) : (
-              <div
-                ref={featuredScrollRef}
-                className="flex gap-4 sm:gap-5 overflow-x-auto pb-4 pt-1 scrollbar-hide scroll-smooth"
-              >
-                {featuredProps.map(p => (
-                  <div key={p.id} className="shrink-0 w-[240px] sm:w-[260px] md:w-[270px]">
-                    <PropertyCard p={p} compact />
-                  </div>
-                ))}
+              <div className="relative group">
+                {/* Navigation Arrows — on left and right sides of cards */}
+                <button
+                  type="button"
+                  onClick={() => scrollFeatured("left")}
+                  className="flex absolute left-0.5 sm:-left-3 lg:-left-4 top-1/2 -translate-y-1/2 z-20 h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-full bg-white/95 backdrop-blur border border-[#e8d9c0] text-[#1a1209] hover:bg-[#fef9f0] hover:text-[#C9921A] hover:border-[#C9921A] transition-all shadow-[0_4px_16px_rgba(0,0,0,0.14)] hover:scale-105 active:scale-95 cursor-pointer"
+                  aria-label="Previous featured property"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => scrollFeatured("right")}
+                  className="flex absolute right-0.5 sm:-right-3 lg:-right-4 top-1/2 -translate-y-1/2 z-20 h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-full bg-white/95 backdrop-blur border border-[#e8d9c0] text-[#1a1209] hover:bg-[#fef9f0] hover:text-[#C9921A] hover:border-[#C9921A] transition-all shadow-[0_4px_16px_rgba(0,0,0,0.14)] hover:scale-105 active:scale-95 cursor-pointer"
+                  aria-label="Next featured property"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+
+                <div
+                  ref={featuredScrollRef}
+                  className="flex gap-3 sm:gap-5 overflow-x-auto pb-3 pt-1 px-4 -mx-4 sm:px-0 sm:mx-0 scrollbar-hide scroll-smooth snap-x snap-mandatory"
+                  style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+                >
+                  {featuredProps.map(p => (
+                    <div key={p.id} className="shrink-0 w-[66vw] min-w-[220px] max-w-[245px] sm:w-[245px] snap-start">
+                      <PropertyCard p={p} fluid />
+                    </div>
+                  ))}
+                  {/* Trailing spacer for clean mobile edge padding */}
+                  <div className="w-4 sm:hidden shrink-0" aria-hidden="true" />
+                </div>
               </div>
             )}
           </div>
@@ -897,23 +1110,38 @@ function Home() {
       </section>
 
       {/* ── 3. EXPLORE BY CITY SECTION (Dynamic Real Available Properties Count) ── */}
-      <section className="px-4 sm:px-6 lg:px-10 xl:px-12 py-10 sm:py-14 max-w-[1536px] mx-auto w-full border-t border-[#e8d9c0]/60">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+      <section className="px-4 sm:px-6 lg:px-10 xl:px-12 py-6 sm:py-14 max-w-[1536px] mx-auto w-full border-t border-[#e8d9c0]/60">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-8 items-center">
           
           {/* Left Column */}
           <div className="lg:col-span-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-[#a08858]">
-                EXPLORE BY CITY
-              </span>
-              <span className="h-0.5 w-8 bg-[#C9921A]" />
+            <div className="flex items-center justify-between gap-2 mb-1 sm:mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-[#a08858]">
+                  EXPLORE BY CITY
+                </span>
+                <span className="h-0.5 w-6 sm:w-8 bg-[#C9921A]" />
+              </div>
+
+              {/* Mobile View All Link */}
+              <button
+                type="button"
+                onClick={() => setShowCitiesModal(true)}
+                className="lg:hidden inline-flex items-center gap-1 text-xs font-bold text-[#C9921A] hover:underline cursor-pointer"
+              >
+                <span>View all</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
             </div>
-            <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1a1209] tracking-tight font-display leading-snug" style={{ fontFamily: "'Sora', sans-serif" }}>
-              Find properties in<br />top cities
+
+            <h2 className="text-xl sm:text-3xl font-extrabold text-[#1a1209] tracking-tight font-display leading-tight sm:leading-snug" style={{ fontFamily: "'Sora', sans-serif" }}>
+              Find properties in<br className="hidden sm:inline" /> top cities
             </h2>
+
+            {/* Desktop View All Button */}
             <button
               onClick={() => setShowCitiesModal(true)}
-              className="mt-5 inline-flex items-center gap-2 rounded-full border border-[#C9921A]/40 bg-white px-5 py-2.5 text-xs sm:text-sm font-bold text-[#1a1209] transition-all hover:border-[#C9921A] hover:bg-[#fef9f0] shadow-xs cursor-pointer"
+              className="hidden lg:inline-flex mt-5 items-center gap-2 rounded-full border border-[#C9921A]/40 bg-white px-5 py-2.5 text-xs sm:text-sm font-bold text-[#1a1209] transition-all hover:border-[#C9921A] hover:bg-[#fef9f0] shadow-xs cursor-pointer"
             >
               <span>View All Cities</span>
               <ArrowRight className="h-4 w-4 text-[#C9921A]" />
@@ -921,10 +1149,13 @@ function Home() {
           </div>
 
           {/* Right Column: Dynamic Real City Cards */}
-          <div className="lg:col-span-9 flex gap-3 sm:gap-4 overflow-x-auto pb-4 scrollbar-hide">
+          <div
+            className="lg:col-span-9 flex gap-3 sm:gap-4 overflow-x-auto pb-3 pt-1 px-4 -mx-4 sm:px-0 sm:mx-0 scrollbar-hide snap-x snap-mandatory"
+            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+          >
             {cityCardsLoading ? (
               Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="shrink-0 w-44 sm:w-52 h-44 sm:h-48 rounded-2xl bg-[#f0e4cc] animate-pulse" />
+                <div key={i} className="shrink-0 w-38 sm:w-52 h-38 sm:h-48 rounded-2xl bg-[#f0e4cc] animate-pulse" />
               ))
             ) : (
               cityCards.map(c => (
@@ -932,11 +1163,11 @@ function Home() {
                   key={c.name}
                   to="/properties/map"
                   search={{ city: c.name }}
-                  className="group relative shrink-0 w-44 sm:w-52 h-44 sm:h-48 rounded-2xl overflow-hidden shadow-md transition-transform duration-300 hover:scale-105"
+                  className="group relative shrink-0 w-38 sm:w-52 h-38 sm:h-48 rounded-2xl overflow-hidden shadow-md transition-transform duration-300 hover:scale-105 snap-start"
                 >
                   <img src={c.img} alt={c.name} className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-110" />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
-                  <div className="absolute bottom-3 left-3.5 right-3 text-white">
+                  <div className="absolute bottom-2.5 sm:bottom-3 left-3 sm:left-3.5 right-3 text-white">
                     <h3 className="text-sm sm:text-base font-extrabold tracking-tight font-display">{c.name}</h3>
                     <p className="text-[10px] sm:text-xs text-amber-300 font-bold">{c.count}</p>
                   </div>
@@ -992,7 +1223,7 @@ function Home() {
                       setShowCitiesModal(false);
                       window.location.href = `/properties/map?city=${encodeURIComponent(cityName)}`;
                     }}
-                    className="group flex flex-col items-center justify-between p-4 rounded-2xl bg-white border border-[#e8d9c0] hover:border-[#C9921A] hover:bg-[#fef3d4] transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md text-center min-h-[110px]"
+                    className="group flex flex-col items-center justify-between p-2.5 sm:p-4 rounded-2xl bg-white border border-[#e8d9c0] hover:border-[#C9921A] hover:bg-[#fef3d4] transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md text-center min-h-[110px]"
                   >
                     <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#faf6ee] group-hover:bg-white transition-colors">
                       <CityLandmarkIcon city={cityName} className="h-9 w-9 text-[#1a1209] group-hover:text-[#C9921A] transition-colors" />
@@ -1090,42 +1321,70 @@ function Home() {
           </div>
 
           {/* Card 2: TRENDING PROPERTIES */}
-          <div className="lg:col-span-5 rounded-3xl bg-white p-6 border border-[#e8d9c0] shadow-sm flex flex-col justify-between">
+          <div className="lg:col-span-5 rounded-2xl sm:rounded-3xl bg-white p-3.5 sm:p-6 border border-[#e8d9c0] shadow-sm flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3 sm:mb-4">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-[#a08858]">TRENDING PROPERTIES</span>
-                <Link to="/properties" className="text-xs font-bold text-gray-500 hover:text-[#C9921A]">View All</Link>
+                <Link to="/properties" className="text-xs font-bold text-[#C9921A] hover:underline">View All</Link>
               </div>
 
               {trendingLoading ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="flex sm:grid sm:grid-cols-2 gap-3 overflow-x-auto pb-2">
                   {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="h-40 rounded-xl bg-[#f0e4cc] animate-pulse" />
+                    <div key={i} className="h-40 w-52 sm:w-auto shrink-0 sm:shrink rounded-xl bg-[#f0e4cc] animate-pulse" />
                   ))}
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  {trendingProps.map(p => (
-                    <PropertyCard key={p.id} p={p} compact />
-                  ))}
+                <div className="relative group">
+                  {/* Mobile Left & Right Arrows on the cards */}
+                  <button
+                    type="button"
+                    onClick={() => scrollTrending("left")}
+                    className="flex sm:hidden absolute left-0 top-1/2 -translate-y-1/2 z-20 h-7 w-7 items-center justify-center rounded-full bg-white/95 backdrop-blur border border-[#e8d9c0] text-[#1a1209] shadow-md hover:text-[#C9921A] active:scale-90 cursor-pointer"
+                    aria-label="Previous trending property"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => scrollTrending("right")}
+                    className="flex sm:hidden absolute right-0 top-1/2 -translate-y-1/2 z-20 h-7 w-7 items-center justify-center rounded-full bg-white/95 backdrop-blur border border-[#e8d9c0] text-[#1a1209] shadow-md hover:text-[#C9921A] active:scale-90 cursor-pointer"
+                    aria-label="Next trending property"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+
+                  <div
+                    ref={trendingScrollRef}
+                    className="flex sm:grid sm:grid-cols-2 gap-3 overflow-x-auto sm:overflow-visible pb-2 sm:pb-0 px-3.5 -mx-3.5 sm:px-0 sm:mx-0 scrollbar-hide scroll-smooth snap-x snap-mandatory"
+                    style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+                  >
+                    {trendingProps.map(p => (
+                      <div key={p.id} className="w-[62vw] min-w-[200px] max-w-[230px] sm:w-auto shrink-0 sm:shrink snap-start">
+                        <PropertyCard p={p} compact fluid />
+                      </div>
+                    ))}
+                    <div className="w-2 sm:hidden shrink-0" aria-hidden="true" />
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
           {/* Card 3: POPULAR LOCALITIES */}
-          <div className="lg:col-span-3 rounded-3xl bg-white p-6 border border-[#e8d9c0] shadow-sm flex flex-col justify-between">
+          <div className="lg:col-span-3 rounded-2xl sm:rounded-3xl bg-white p-3.5 sm:p-6 border border-[#e8d9c0] shadow-sm flex flex-col justify-between">
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-[#a08858] block mb-4">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-[#a08858] block mb-3 sm:mb-4">
                 POPULAR LOCALITIES
               </span>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5 sm:gap-2">
                 {POPULAR_LOCALITY_CHIPS.map(loc => (
                   <button
                     key={loc}
                     type="button"
                     onClick={() => { window.location.href = `/properties?q=${encodeURIComponent(loc)}`; }}
-                    className="rounded-xl bg-[#faf6ee] hover:bg-[#fef3d4] border border-[#e8d9c0] px-3 py-1.5 text-xs font-semibold text-[#1a1209] transition-colors"
+                    className="rounded-xl bg-[#faf6ee] hover:bg-[#fef3d4] border border-[#e8d9c0] px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold text-[#1a1209] transition-colors cursor-pointer"
                   >
                     {loc}
                   </button>
@@ -1135,7 +1394,7 @@ function Home() {
 
             <Link
               to="/properties"
-              className="mt-6 inline-flex items-center justify-between rounded-2xl border border-[#e8d9c0] p-3 text-xs font-bold text-[#1a1209] hover:bg-[#fef9f0] transition-colors"
+              className="mt-4 sm:mt-6 inline-flex items-center justify-between rounded-xl sm:rounded-2xl border border-[#e8d9c0] p-2.5 sm:p-3 text-xs font-bold text-[#1a1209] hover:bg-[#fef9f0] transition-colors"
             >
               <span>Explore All Localities</span>
               <ArrowRight className="h-4 w-4 text-[#C9921A]" />
@@ -1146,44 +1405,44 @@ function Home() {
       </section>
 
       {/* ── 5. CTA BANNER ────── */}
-      <section className="mx-auto max-w-[1536px] w-full px-4 sm:px-6 lg:px-10 xl:px-12 my-8">
-        <div className="rounded-3xl p-6 sm:p-8 text-white flex flex-col lg:flex-row items-center justify-between gap-6 shadow-2xl bg-[#1a1209]">
+      <section className="mx-auto max-w-[1536px] w-full px-4 sm:px-6 lg:px-10 xl:px-12 my-5 sm:my-8">
+        <div className="rounded-2xl sm:rounded-3xl p-4 sm:p-8 text-white flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 sm:gap-6 shadow-xl bg-[#1a1209]">
           
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-[#C9921A]/40 bg-[#C9921A]/20 text-[#C9921A]">
-              <HomeIcon className="h-6 w-6" />
+          <div className="flex items-center gap-3 sm:gap-4">
+            <div className="flex h-10 w-10 sm:h-12 sm:w-12 shrink-0 items-center justify-center rounded-xl sm:rounded-2xl border border-[#C9921A]/40 bg-[#C9921A]/20 text-[#C9921A]">
+              <HomeIcon className="h-5 w-5 sm:h-6 sm:w-6" />
             </div>
             <div>
-              <h3 className="text-lg sm:text-xl font-extrabold text-white font-display">Have a property to sell or rent?</h3>
+              <h3 className="text-base sm:text-xl font-extrabold text-white font-display">Have a property to sell or rent?</h3>
               <p className="text-xs sm:text-sm text-gray-300 mt-0.5">List your property and reach thousands of genuine buyers and tenants.</p>
             </div>
           </div>
 
           <button
             onClick={() => { window.location.href = "/dashboard/properties/new"; }}
-            className="shrink-0 min-h-[48px] rounded-xl px-6 py-3 text-sm font-extrabold text-white transition-all shadow-md hover:opacity-90 active:scale-95"
+            className="w-full lg:w-auto shrink-0 min-h-[44px] sm:min-h-[48px] rounded-xl px-5 py-2.5 sm:px-6 sm:py-3 text-xs sm:text-sm font-extrabold text-white transition-all shadow-md hover:opacity-90 active:scale-95 cursor-pointer text-center"
             style={{ backgroundColor: GOLD }}
           >
             Post Your Property &rarr;
           </button>
 
           {/* Benefit icons */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-4 lg:pt-0 border-t lg:border-t-0 border-white/10 w-full lg:w-auto">
-            <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-[#C9921A] shrink-0" />
-              <span className="text-[11px] font-bold text-gray-200">Quick Listing in 5 Mins</span>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-4 pt-3 sm:pt-4 lg:pt-0 border-t lg:border-t-0 border-white/10 w-full lg:w-auto">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
+              <span className="text-[10px] sm:text-[11px] font-bold text-gray-200">Quick Listing in 5 Mins</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Eye className="h-4 w-4 text-[#C9921A] shrink-0" />
-              <span className="text-[11px] font-bold text-gray-200">Maximum Visibility</span>
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <Eye className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
+              <span className="text-[10px] sm:text-[11px] font-bold text-gray-200">Maximum Visibility</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Users className="h-4 w-4 text-[#C9921A] shrink-0" />
-              <span className="text-[11px] font-bold text-gray-200">Connect Directly</span>
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <Users className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
+              <span className="text-[10px] sm:text-[11px] font-bold text-gray-200">Connect Directly</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Award className="h-4 w-4 text-[#C9921A] shrink-0" />
-              <span className="text-[11px] font-bold text-gray-200">Best Price Assistance</span>
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <Award className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-[#C9921A] shrink-0" />
+              <span className="text-[10px] sm:text-[11px] font-bold text-gray-200">Best Price Assistance</span>
             </div>
           </div>
 
@@ -1401,17 +1660,17 @@ function NearbyExplorer() {
   const toggle=(label:string)=>setOpenLabel(p=>p===label?"":label);
 
   return (
-    <section style={{ backgroundColor: BG }} className="px-4 sm:px-6 lg:px-10 xl:px-12 py-10 sm:py-12 max-w-[1536px] mx-auto w-full">
+    <section style={{ backgroundColor: BG }} className="px-4 sm:px-6 lg:px-10 xl:px-12 py-6 sm:py-12 max-w-[1536px] mx-auto w-full">
 
       {/* ── Idle / Requesting / Loading / Denied / Error — hero card ── */}
       {status !== "done" && (
-        <div className="rounded-3xl overflow-hidden"
+        <div className="rounded-2xl sm:rounded-3xl overflow-hidden shadow-xs"
           style={{ border: "1.5px solid #e8d9c0", backgroundColor: "#fff" }}>
           <div className="flex flex-col sm:flex-row items-stretch">
 
-            {/* LEFT — compact illustrated panel */}
-            <div className="relative flex items-end justify-center overflow-hidden shrink-0"
-              style={{ backgroundColor: "#fdf0e0", width: "clamp(140px,28%,220px)", minHeight: 120 }}>
+            {/* LEFT — compact illustrated panel (full banner width on mobile) */}
+            <div className="relative flex items-end justify-center overflow-hidden shrink-0 w-full sm:w-[clamp(140px,28%,220px)] h-28 sm:h-auto min-h-[110px]"
+              style={{ backgroundColor: "#fdf0e0" }}>
               <div className="absolute inset-0"
                 style={{ background: "linear-gradient(180deg,#fde8c8 0%,#fdf0e0 100%)" }} />
               {/* Clouds */}
@@ -1435,33 +1694,33 @@ function NearbyExplorer() {
                 <circle cx="36" cy="30" r="6" fill="#b87a2a"/>
               </svg>
               {/* 3 small icon bubbles */}
-              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow"
-                style={{ bottom: 52, left: "14%", width: 22, height: 22, border: "1.5px solid #e8c48a" }}>
+              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow left-[20%] sm:left-[14%]"
+                style={{ bottom: 52, width: 22, height: 22, border: "1.5px solid #e8c48a" }}>
                 <span style={{ fontSize: 11 }}>🏫</span>
               </div>
-              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow"
-                style={{ bottom: 30, left: "20%", width: 20, height: 20, border: "1.5px solid #e8c48a" }}>
+              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow left-[30%] sm:left-[20%]"
+                style={{ bottom: 30, width: 20, height: 20, border: "1.5px solid #e8c48a" }}>
                 <span style={{ fontSize: 10 }}>🏥</span>
               </div>
-              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow"
-                style={{ bottom: 16, left: "38%", width: 20, height: 20, border: "1.5px solid #e8c48a" }}>
+              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow left-[42%] sm:left-[38%]"
+                style={{ bottom: 16, width: 20, height: 20, border: "1.5px solid #e8c48a" }}>
                 <span style={{ fontSize: 10 }}>🚓</span>
               </div>
-              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow"
-                style={{ bottom: 32, right: "14%", width: 22, height: 22, border: "1.5px solid #e8c48a" }}>
+              <div className="absolute z-10 flex items-center justify-center rounded-full bg-white shadow right-[20%] sm:right-[14%]"
+                style={{ bottom: 32, width: 22, height: 22, border: "1.5px solid #e8c48a" }}>
                 <span style={{ fontSize: 11 }}>🏦</span>
               </div>
             </div>
 
-            {/* RIGHT — compact text + action in one row */}
-            <div className="flex flex-1 items-center justify-between gap-4 px-5 sm:px-8 py-4 flex-wrap">
+            {/* RIGHT — compact text + action */}
+            <div className="flex flex-1 flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4 p-4 sm:px-8 sm:py-4">
               {/* Text block */}
               <div className="min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
-                  <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: "#a08858" }}>
+                  <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest text-[#a08858]">
                     DISCOVER NEARBY
                   </span>
-                  <span className="h-0.5 w-5 shrink-0" style={{ backgroundColor: GOLD }} />
+                  <span className="h-0.5 w-5 shrink-0 bg-[#C9921A]" />
                 </div>
                 <h2 className="text-base sm:text-lg font-extrabold text-[#1a1209] leading-tight"
                   style={{ fontFamily: "'Sora',sans-serif" }}>
@@ -1473,7 +1732,7 @@ function NearbyExplorer() {
               </div>
 
               {/* Action */}
-              <div className="shrink-0 flex flex-col items-start gap-1.5">
+              <div className="w-full sm:w-auto shrink-0 flex flex-col items-start gap-1.5 pt-1 sm:pt-0">
                 {(status === "idle" || status === "denied" || status === "error") && (
                   <>
                     {(status === "denied" || status === "error") && (
@@ -1486,13 +1745,13 @@ function NearbyExplorer() {
                     <button
                       type="button"
                       onClick={handleAllow}
-                      className="inline-flex items-center gap-2 rounded-2xl px-5 py-2.5 text-sm font-bold text-white shadow-md transition hover:opacity-90 active:scale-95 whitespace-nowrap"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl sm:rounded-2xl px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow-md transition hover:opacity-90 active:scale-95 cursor-pointer whitespace-nowrap"
                       style={{ backgroundColor: GOLD }}
                     >
                       <Navigation className="h-4 w-4" />
-                      Use my location
+                      <span>Use my location</span>
                     </button>
-                    <p className="text-[9px]" style={{ color: "#c8b08a" }}>
+                    <p className="text-[9px] text-[#a08858]">
                       Your location is never stored or shared.
                     </p>
                   </>
@@ -1570,8 +1829,8 @@ function NearbyExplorer() {
                 style={{ scrollbarWidth: "none", msOverflowStyle: "none" } as React.CSSProperties}
               >
                 {nearbyProps.map(p => (
-                  <div key={p.id} className="shrink-0 w-[200px] sm:w-[220px]">
-                    <PropertyCard p={p} compact />
+                  <div key={p.id} className="shrink-0 w-[240px]">
+                    <PropertyCard p={p} />
                   </div>
                 ))}
               </div>
@@ -1813,48 +2072,68 @@ function RecentlyViewedCard({ item }: { item: ViewedProperty }) {
     <Link
       to="/properties/$id"
       params={{ id: item.id }}
-      className="shrink-0 w-[180px] sm:w-[200px] md:w-[220px] lg:w-[240px] group"
+      className="shrink-0 group flex flex-col overflow-hidden rounded-2xl bg-white border border-[#e8d9c0] transition-all duration-200 hover:shadow-[0_12px_28px_-6px_rgba(201,146,26,0.22)] hover:-translate-y-1 hover:border-[#C9921A] focus-within:ring-2 focus-within:ring-[#C9921A]"
+      style={{ width: 240, height: 274.33, minWidth: 240, maxWidth: 240, minHeight: 274.33, maxHeight: 274.33 }}
     >
-      <div
-        className="rounded-2xl overflow-hidden border transition-all duration-200 group-hover:shadow-lg group-hover:-translate-y-0.5"
-        style={{ borderColor: "#e8d9c0", backgroundColor: "#fff" }}
-      >
-        {/* Image */}
-        <div className="relative overflow-hidden" style={{ aspectRatio: "4/3" }}>
-          {img ? (
-            <img
-              src={img}
-              alt={item.title}
-              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center" style={{ backgroundColor: "#f0e4cc" }}>
-              <Building2 className="h-8 w-8" style={{ color: "#c9921a55" }} />
-            </div>
-          )}
-          {/* Type badge */}
+      {/* Image area — fixed height 160px */}
+      <div className="relative overflow-hidden w-full bg-[#fcebd1]/40 shrink-0" style={{ height: 160 }}>
+        {img ? (
+          <img
+            src={img}
+            alt={item.title}
+            loading="lazy"
+            onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
+            className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+          />
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-[#fef3d4]/50">
+            <svg className="h-8 w-8 text-[#C9921A]/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5A2.5 2.5 0 015.5 5h13A2.5 2.5 0 0121 7.5v9A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5v-9zM8.25 10.5a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm9.19 4.5l-3.44-3.44a.75.75 0 00-1.06 0l-2.5 2.5-1.19-1.19a.75.75 0 00-1.06 0L6 15" />
+            </svg>
+            <span className="text-[10px] text-[#C9921A]/80 font-medium">No photo</span>
+          </div>
+        )}
+
+        {/* Type badge top-left */}
+        <div className="absolute top-2 left-2 max-w-[calc(100%-1rem)] z-10">
           <span
-            className="absolute top-2 left-2 rounded-full px-2.5 py-0.5 text-[10px] font-bold backdrop-blur-sm"
-            style={{ backgroundColor: "rgba(250,246,238,0.92)", color: "#836737" }}
+            className="block max-w-full rounded-full px-2.5 py-0.5 text-[10px] font-semibold leading-tight truncate shadow-2xs border border-[#C9921A]/25"
+            style={{ backgroundColor: "rgba(255,255,255,0.92)", color: "#1a1209", backdropFilter: "blur(4px)" }}
           >
             {label}
           </span>
         </div>
+      </div>
 
-        {/* Info */}
-        <div className="p-2.5 sm:p-3 space-y-0.5">
-          <p className="text-[10px] font-medium truncate" style={{ color: "#a08858" }}>
+      {/* Info section — fixed remaining space */}
+      <div
+        className="px-2.5 py-2 flex flex-col min-w-0 justify-between overflow-hidden"
+        style={{ height: 114.33 }}
+      >
+        <div className="min-w-0">
+          {/* Locality */}
+          <p className="truncate text-[10px] font-medium" style={{ color: "#a08858" }}>
             {item.locality ? `${item.locality}, ` : ""}{item.city}
           </p>
-          <p className="text-xs font-bold leading-snug line-clamp-2" style={{ color: "#1a1209" }}>
+
+          {/* Title — single line ellipsis so dimensions never change */}
+          <p
+            className="mt-0.5 text-[11px] font-bold leading-tight truncate group-hover:text-[#C9921A] transition-colors"
+            style={{ color: "#1a1209" }}
+            title={item.title}
+          >
             {item.title}
           </p>
-          {price && (
-            <p className="text-xs font-extrabold pt-0.5" style={{ color: GOLD }}>
-              {price}
-            </p>
-          )}
         </div>
+
+        {/* Price */}
+        {price && (
+          <div className="pt-1 flex items-center gap-1 min-w-0 overflow-hidden border-t border-[#e8d9c0]/80 mt-auto">
+            <span className="text-[11px] sm:text-xs font-extrabold shrink-0 truncate" style={{ color: GOLD }}>
+              {price}
+            </span>
+          </div>
+        )}
       </div>
     </Link>
   );
@@ -1990,8 +2269,8 @@ function SimilarPropertiesCarousel({ propertyId }: { propertyId: string }) {
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" } as React.CSSProperties}
       >
         {items.map(p => (
-          <div key={p.id} className="shrink-0 w-[200px] sm:w-[220px] md:w-[240px] lg:w-[260px]">
-            <PropertyCard p={p} compact />
+          <div key={p.id} className="shrink-0 w-[240px]">
+            <PropertyCard p={p} />
           </div>
         ))}
       </div>
@@ -2072,7 +2351,7 @@ function CitySection({ city }: { city: string }) {
           {Array.from({ length: 6 }).map((_, i) => (
             <div
               key={i}
-              className="w-full h-64 sm:h-72 rounded-2xl animate-pulse"
+              className="w-[240px] h-[274.33px] rounded-2xl animate-pulse"
               style={{ backgroundColor: "#f0e4cc" }}
             />
           ))}
@@ -2113,9 +2392,9 @@ function CitySection({ city }: { city: string }) {
             {props.map(p => (
               <div
                 key={p.id}
-                className="shrink-0 w-[200px] sm:w-[220px] md:w-[240px] lg:w-[260px]"
+                className="shrink-0 w-[240px]"
               >
-                <PropertyCard p={p} compact />
+                <PropertyCard p={p} />
               </div>
             ))}
           </div>

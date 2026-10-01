@@ -18,6 +18,7 @@ import {
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { fetchProfile } from "@/lib/auth-cache";
+import { CustomDatePicker } from "@/components/ui/custom-date-picker";
 
 export const Route = createFileRoute("/_authenticated/dashboard/visits")({
   head: () => ({ meta: [{ title: "Visit Management — Nivaas" }] }),
@@ -99,16 +100,14 @@ function RescheduleDialog({
           <div className="space-y-5 pt-2">
             <div className="space-y-1.5">
               <Label htmlFor="reschedule-date">New Date</Label>
-              <Input
+              <CustomDatePicker
                 id="reschedule-date"
-                type="date"
-                min={todayISO()}
+                minDate={todayISO()}
                 value={date}
-                onChange={e => setDate(e.target.value)}
+                onChange={val => setDate(val)}
+                theme="gold"
+                placeholder="Select new visit date"
               />
-              {date && (
-                <p className="text-xs text-muted-foreground">Selected: {formatDate(date)}</p>
-              )}
             </div>
 
             <div className="space-y-1.5">

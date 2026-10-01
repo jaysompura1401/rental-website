@@ -77,21 +77,20 @@ router.get("/summary", requireAuth, async (req, res) => {
 });
 
 // GET /api/analytics/monthly — last 6 months rent income
-// PostgreSQL: TO_CHAR() instead of DATE_FORMAT(); CURRENT_DATE - INTERVAL instead of DATE_SUB/CURDATE
 router.get("/monthly", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT
-         TO_CHAR(rp.paid_date, 'Mon') AS month,
-         EXTRACT(MONTH FROM rp.paid_date)::int AS month_num,
-         EXTRACT(YEAR  FROM rp.paid_date)::int AS year,
+         DATE_FORMAT(rp.paid_date, '%b') AS month,
+         MONTH(rp.paid_date) AS month_num,
+         YEAR(rp.paid_date)  AS year,
          SUM(rp.amount) AS total
        FROM nivaas_rent_payments rp
        JOIN nivaas_agreements ag ON ag.id = rp.agreement_id
        WHERE ag.owner_id = ?
          AND rp.status = 'paid'
-         AND rp.paid_date >= CURRENT_DATE - INTERVAL '6 months'
-       GROUP BY year, month_num, month
+         AND rp.paid_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+       GROUP BY YEAR(rp.paid_date), MONTH(rp.paid_date), DATE_FORMAT(rp.paid_date, '%b')
        ORDER BY year ASC, month_num ASC`,
       [req.user.id]
     );
@@ -106,16 +105,16 @@ router.get("/visits", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT
-         TO_CHAR(v.visit_date, 'Mon') AS month,
-         EXTRACT(MONTH FROM v.visit_date)::int AS month_num,
-         EXTRACT(YEAR  FROM v.visit_date)::int AS year,
+         DATE_FORMAT(v.visit_date, '%b') AS month,
+         MONTH(v.visit_date) AS month_num,
+         YEAR(v.visit_date)  AS year,
          COUNT(*) AS total,
          SUM(CASE WHEN v.status='completed' THEN 1 ELSE 0 END) AS completed
        FROM nivaas_property_visits v
        WHERE v.owner_id = ?
-         AND v.visit_date >= CURRENT_DATE - INTERVAL '6 months'
-       GROUP BY year, month_num, month
-       ORDER BY year, month_num`,
+         AND v.visit_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+       GROUP BY YEAR(v.visit_date), MONTH(v.visit_date), DATE_FORMAT(v.visit_date, '%b')
+       ORDER BY year ASC, month_num ASC`,
       [req.user.id]
     );
     res.json(rows);

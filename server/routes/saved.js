@@ -20,11 +20,12 @@ router.get("/", requireAuth, async (req, res) => {
     const ids = rows.map(r => r.id);
     let images = [];
     if (ids.length > 0) {
-      const result = await pool._pool.query(
-        "SELECT property_id, url FROM nivaas_property_images WHERE property_id = ANY($1) AND is_cover = true",
-        [ids]
+      const placeholders = ids.map(() => "?").join(",");
+      const [imgRows] = await pool.query(
+        `SELECT property_id, url FROM nivaas_property_images WHERE property_id IN (${placeholders}) AND is_cover = 1`,
+        ids
       );
-      images = result.rows;
+      images = imgRows;
     }
     const imgMap = {};
     images.forEach(i => { imgMap[i.property_id] = i.url; });
@@ -44,11 +45,9 @@ router.get("/", requireAuth, async (req, res) => {
 router.post("/:propertyId", requireAuth, async (req, res) => {
   try {
     const { propertyId } = req.params;
-    // PostgreSQL: ON CONFLICT DO NOTHING instead of INSERT IGNORE
     await pool.query(
-      `INSERT INTO nivaas_saved_properties (id, user_id, property_id)
-       VALUES (?, ?, ?)
-       ON CONFLICT (user_id, property_id) DO NOTHING`,
+      `INSERT IGNORE INTO nivaas_saved_properties (id, user_id, property_id)
+       VALUES (?, ?, ?)`,
       [uuidv4(), req.user.id, propertyId]
     );
     await pool.query(
@@ -69,9 +68,8 @@ router.delete("/:propertyId", requireAuth, async (req, res) => {
       "DELETE FROM nivaas_saved_properties WHERE user_id = ? AND property_id = ?",
       [req.user.id, propertyId]
     );
-    // PostgreSQL: GREATEST() is supported natively
     await pool.query(
-      "UPDATE nivaas_properties SET saves_count = GREATEST(saves_count - 1, 0) WHERE id = ?",
+      "UPDATE nivaas_properties SET saves_count = GREATEST(CAST(saves_count AS SIGNED) - 1, 0) WHERE id = ?",
       [propertyId]
     );
     res.json({ saved: false });

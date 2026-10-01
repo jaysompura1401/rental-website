@@ -110,7 +110,12 @@ export interface ApiProperty {
   title: string;
   description: string | null;
   property_type: string;
-  listing_type: "rent" | "sale" | "pg";
+  listing_type: "rent" | "sale" | "pg" | "short_term";
+  /** Short-term availability window (ISO date strings) */
+  short_term_from?: string | null;
+  short_term_to?: string | null;
+  /** Separate price per week for short-term stays */
+  short_term_price?: number | null;
   status: string;
   city: string;
   state: string | null;

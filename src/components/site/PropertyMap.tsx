@@ -51,6 +51,8 @@ interface PropertyMapProps {
 
 const GOLD           = "#C9921A";
 const DARK           = "#1a1209";
+// Short-term listings get a distinct teal-purple accent that stays on-brand with Nivaas
+const SHORT_TERM     = "#7C3AED"; // violet — distinct from gold/green/dark
 const DEFAULT_CENTER: [number, number] = [23.02, 72.57];
 const DEFAULT_ZOOM   = 12;
 
@@ -114,16 +116,20 @@ export function isPropertyNew(prop: ApiProperty): boolean {
 type PinState = "default" | "hovered" | "selected";
 
 function buildPinHtml(state: PinState, prop: ApiProperty): string {
-  const isNew  = isPropertyNew(prop);
-  const label  = isNew ? "New" : formatMarkerPrice(prop.price);
-  const suffix = isNew ? "" : (prop.listing_type !== "sale" ? "/mo" : "");
+  const isShortTerm = prop.listing_type === "short_term";
+  // Short-term properties must always display as short-term pins with weekly rates, never overridden as "New"
+  const isNew = !isShortTerm && isPropertyNew(prop);
+  const priceVal = Number(isShortTerm && prop.short_term_price ? prop.short_term_price : (prop.price || 0));
+  const label = isNew ? "New" : (priceVal > 0 ? formatMarkerPrice(priceVal) : (isShortTerm ? "Short-Term" : "₹0"));
+  const suffix = isNew || priceVal <= 0 ? "" : (isShortTerm ? "/wk" : (prop.listing_type !== "sale" ? "/mo" : ""));
+  const defaultBg = isNew ? "#10b981" : isShortTerm ? SHORT_TERM : GOLD;
   const bg =
-    state === "selected" ? "#b5800e" :
-    state === "hovered"  ? DARK      : (isNew ? "#10b981" : GOLD);
+    state === "selected" ? (isShortTerm ? "#5b21b6" : "#b5800e") :
+    state === "hovered"  ? DARK      : defaultBg;
   const scale  = state === "selected" ? 1.18 : state === "hovered" ? 1.1 : 1;
   const shadow = state !== "default"
     ? "0 4px 14px rgba(0,0,0,0.4)"
-    : (isNew ? "0 2px 8px rgba(16,185,129,0.4)" : "0 2px 6px rgba(0,0,0,0.22)");
+    : (isNew ? "0 2px 8px rgba(16,185,129,0.4)" : isShortTerm ? "0 2px 8px rgba(124,58,237,0.45)" : "0 2px 6px rgba(0,0,0,0.22)");
 
   return `<div style="
       display:inline-flex;align-items:center;justify-content:center;
@@ -134,7 +140,7 @@ function buildPinHtml(state: PinState, prop: ApiProperty): string {
       box-shadow:${shadow};
       transform:scale(${scale});transform-origin:bottom center;
       transition:transform 0.12s,background 0.12s;
-      border:1.5px solid rgba(255,255,255,0.35);
+      border:1.5px solid rgba(255,255,255,0.4);
       position:relative;
     ">
     ${isNew ? '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#fff;margin-right:4px;"></span>' : ""}
@@ -187,7 +193,7 @@ function PropertyPopupCard({
   onClose: () => void;
   onCancelClose: () => void;
 }) {
-  const CARD_W = 290, CARD_H = 360, GAP = 14;
+  const CARD_W = Math.min(290, Math.max(240, containerWidth - 16)), CARD_H = 360, GAP = 14;
   let left = popup.x - CARD_W / 2;
   let top  = popup.y - CARD_H - GAP < 8 ? popup.y + GAP + 28 : popup.y - CARD_H - GAP;
   left = Math.max(8, Math.min(left, containerWidth  - CARD_W - 8));
@@ -195,8 +201,8 @@ function PropertyPopupCard({
 
   const { property: p } = popup;
   const img = p.images?.[0] ?? p.cover_image_url ?? null;
-  const badgeBg    = p.listing_type === "sale" ? GOLD : p.listing_type === "pg" ? "#6b4f2a" : DARK;
-  const badgeLabel = p.listing_type === "sale" ? "Buy" : p.listing_type === "pg" ? "PG" : "Rent";
+  const badgeBg    = p.listing_type === "sale" ? GOLD : p.listing_type === "pg" ? "#6b4f2a" : p.listing_type === "short_term" ? SHORT_TERM : DARK;
+  const badgeLabel = p.listing_type === "sale" ? "Buy" : p.listing_type === "pg" ? "PG" : p.listing_type === "short_term" ? "Short-Term" : "Rent";
   const amenityNames: string[] = (p.amenities ?? []).map((a) =>
     typeof a === "string" ? a : (a as { name: string }).name ?? "");
   const hasSecurity = amenityNames.some(a => /security|24.?7/i.test(a));
@@ -254,10 +260,14 @@ function PropertyPopupCard({
         <div style={{ display: "flex", alignItems: "baseline",
           justifyContent: "space-between", marginBottom: 7 }}>
           <span style={{ fontSize: 17, fontWeight: 800, color: DARK }}>
-            {formatINR(p.price)}
-            {p.listing_type !== "sale" && (
-              <span style={{ fontSize: 11, fontWeight: 400, color: "#a08858" }}>/mo</span>
-            )}
+            {p.listing_type === "short_term" && p.short_term_price
+              ? formatINR(p.short_term_price)
+              : formatINR(p.price)}
+            {p.listing_type === "short_term"
+              ? <span style={{ fontSize: 11, fontWeight: 400, color: "#a08858" }}>/wk</span>
+              : p.listing_type !== "sale" && (
+                <span style={{ fontSize: 11, fontWeight: 400, color: "#a08858" }}>/mo</span>
+              )}
           </span>
           {(p.area_sqft ?? 0) > 0 && (
             <span style={{ fontSize: 11, color: "#836737" }}>{p.area_sqft} ft²</span>
@@ -408,13 +418,13 @@ function LeafletCore({
         preferCanvas: true,
       });
 
-      // OpenStreetMap standard tiles — closest look to Google Maps, free, no key
+      // Google Maps road tiles — authentic Google Maps visual style
       L.tileLayer(
-        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
         {
-          subdomains: "abc",
+          subdomains: "0123",
           maxZoom: 20,
-          attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
+          attribution: '© <a href="https://maps.google.com">Google Maps</a>',
         }
       ).addTo(map);
 

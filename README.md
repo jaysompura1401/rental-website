@@ -1,258 +1,311 @@
-# Nivaas
+# Nivaas — Real Estate Platform
 
-Rent, buy, and manage homes across Gujarat — built with React, TanStack Router, Supabase, and Tailwind CSS.
+A full-stack modern real estate web platform to rent, buy, and manage residential & commercial properties across Gujarat.
 
----
-
-## Tech stack
-
-| Layer | Choice |
-|---|---|
-| Framework | React 19 + TanStack Router (file-based, SSR-ready) |
-| Styling | Tailwind CSS v4 + shadcn/ui components |
-| Backend | Supabase (Postgres + Auth + Storage) |
-| State | React context (auth) + TanStack Query (server data) |
-| Build | Vite + Bun |
+- **Frontend**: React 19, TanStack Router, TanStack Query, Tailwind CSS v4, Lucide Icons
+- **Backend**: Node.js, Express REST API, MySQL 8 (`mysql2/promise`), JWT Authentication, Multer
+- **Production Infrastructure**:
+  - **Frontend UI**: [Vercel](https://vercel.com) (Global Edge CDN)
+  - **Backend API**: [Railway](https://railway.app) (Express Node.js Container)
+  - **Database**: [Railway MySQL](https://railway.app) (Managed Cloud MySQL 8)
 
 ---
 
-## Project structure
+## Table of Contents
 
-```
-src/
-├── assets/                  Static images (hero, property photos)
-├── components/
-│   ├── dashboard/
-│   │   └── DashboardShell   Sidebar layout used by all /dashboard/* routes
-│   ├── site/
-│   │   ├── Navbar           Public site navigation
-│   │   ├── Footer           Site footer
-│   │   └── PropertyCard     Card used on the public listing browse page
-│   └── ui/                  shadcn/ui primitives (button, card, dialog, …)
-├── integrations/supabase/
-│   ├── client.ts            Supabase client singleton (lazy, proxy-wrapped)
-│   └── types.ts             Generated database types
-├── lib/
-│   ├── auth-cache.ts        localStorage profile cache (30-min TTL)
-│   ├── AuthContext.tsx      React context + useAuth() hook
-│   ├── mock-properties.ts   Static seed data + formatINR helper
-│   └── utils.ts             cn() and other utilities
-└── routes/
-    ├── __root.tsx            Root shell — QueryClientProvider + AuthProvider
-    ├── index.tsx             Landing page
-    ├── auth.tsx              Sign-in / sign-up
-    ├── verify-otp.tsx        OTP verification
-    ├── properties.index.tsx  Public browse page
-    ├── properties.$id.tsx    Property detail page
-    └── _authenticated/       Protected routes (require sign-in)
-        ├── route.tsx         Auth guard (redirects to /auth if unauthenticated)
-        ├── dashboard.index.tsx          Overview
-        ├── dashboard.properties.index.tsx  My listings (live Supabase)
-        ├── dashboard.properties.new.tsx    Post property (4-step form)
-        ├── dashboard.rentals.tsx
-        ├── dashboard.agreements.tsx
-        ├── dashboard.saved.tsx
-        ├── dashboard.messages.tsx
-        ├── dashboard.analytics.tsx
-        └── dashboard.settings.tsx
-```
+1. [Architecture Overview](#architecture-overview)
+2. [Step-by-Step Live Deployment Guide](#step-by-step-live-deployment-guide)
+   - [Phase 1: Railway MySQL Database Setup](#phase-1-railway-mysql-database-setup)
+   - [Phase 2: Railway Backend API Deployment](#phase-2-railway-backend-api-deployment)
+   - [Phase 3: Vercel Frontend Deployment](#phase-3-vercel-frontend-deployment)
+   - [Phase 4: Connect & Enable CORS](#phase-4-connect--enable-cors)
+3. [Environment Variables Reference](#environment-variables-reference)
+4. [Local Development Setup](#local-development-setup)
+5. [Troubleshooting & FAQs](#troubleshooting--faqs)
 
 ---
 
-## Database
-
-The Supabase project exposes four tables.
-
-### `profiles`
-
-Linked 1-to-1 to `auth.users`. Created automatically on signup.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | uuid PK | matches `auth.users.id` |
-| `full_name` | text | |
-| `phone` | text | |
-| `avatar_url` | text | |
-| `city` | text | |
-| `role` | text | `'customer'` \| `'owner'` \| `'admin'` |
-| `created_at` | timestamptz | |
-| `updated_at` | timestamptz | |
-
-### `properties`
-
-Core listing table. Every row is owned by a `profiles` row.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | uuid PK | |
-| `owner_id` | uuid FK → profiles | |
-| `title` | text | required |
-| `description` | text | |
-| `property_type` | text | Apartment, Villa, PG, Office Space, … |
-| `listing_type` | text | `'rent'` \| `'sale'` \| `'pg'` |
-| `price` | numeric | monthly rent or sale price (₹) |
-| `deposit` | numeric | security deposit (₹) |
-| `bedrooms` | int | |
-| `bathrooms` | int | |
-| `area_sqft` | numeric | |
-| `furnished` | text | Fully Furnished / Semi-Furnished / Unfurnished |
-| `amenities` | text[] | free-form array (WiFi, Gym, …) |
-| `city` | text | required |
-| `locality` | text | |
-| `address` | text | |
-| `images` | text[] | public URLs; first element used as cover |
-| `status` | text | `'active'` \| `'inactive'` \| `'rented'` \| `'pending_review'` |
-| `verified` | bool | set by admins |
-| `created_at` | timestamptz | |
-| `updated_at` | timestamptz | |
-
-### `saved_properties`
-
-Wishlists — customers save listings they like.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | uuid PK | |
-| `user_id` | uuid FK → profiles | |
-| `property_id` | uuid FK → properties | |
-| `created_at` | timestamptz | |
-
-Unique constraint on `(user_id, property_id)`.
-
-### `inquiries`
-
-A customer contacts an owner about a property.
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | uuid PK | |
-| `property_id` | uuid FK → properties | |
-| `user_id` | uuid FK → profiles | the enquiring customer |
-| `owner_id` | uuid FK → profiles | denormalised for fast RLS checks |
-| `message` | text | |
-| `status` | text | `'pending'` \| `'responded'` \| `'scheduled'` \| `'closed'` |
-| `visit_date` | timestamptz | optional scheduled visit |
-| `created_at` | timestamptz | |
-
----
-
-## Auth & caching
-
-Authentication is handled by Supabase Auth (email + OTP).
-
-### How the cache works
+## Architecture Overview
 
 ```
-User signs in
-     │
-     ▼
-supabase.auth.onAuthStateChange fires SIGNED_IN
-     │
-     ▼
-fetchProfile() → queries public.profiles → writes to localStorage
-     │
-     ▼
-AuthContext.profile is set  →  all components re-render
-```
-
-On the next page load `getProfile()` checks localStorage first (TTL = 30 min). If the cached entry is still fresh the app skips the network call entirely. If stale or missing it falls back to `fetchProfile()`.
-
-Signing out calls `supabase.auth.signOut()` **and** removes the localStorage entry so no stale data lingers.
-
-### useAuth hook
-
-```tsx
-import { useAuth } from "@/lib/AuthContext";
-
-function Navbar() {
-  const { profile, loading, signOut } = useAuth();
-
-  if (loading) return <Spinner />;
-  if (!profile) return <Link to="/auth">Sign in</Link>;
-
-  return (
-    <span>
-      Hello, {profile.full_name ?? "there"} ({profile.role})
-    </span>
-  );
-}
+┌────────────────────────────────────────────────────────┐
+│                   USER BROWSER / MOBILE                │
+└───────────────────────────┬────────────────────────────┘
+                            │
+              HTTPS Requests│
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│              FRONTEND (Hosted on VERCEL)               │
+│  • React 19 + TanStack Router (File-based SPA)         │
+│  • Responsive Mobile & Desktop Layouts                 │
+│  • Domain: https://your-nivaas.vercel.app              │
+│  • Env: VITE_API_URL=https://your-api.up.railway.app/api│
+└───────────────────────────┬────────────────────────────┘
+                            │
+                 REST API   │ (CORS Enabled)
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│              BACKEND (Hosted on RAILWAY)               │
+│  • Node.js / Express REST API (server/)                │
+│  • JWT Auth, Image Uploads (/uploads), Scoring Engine  │
+│  • Domain: https://your-api.up.railway.app             │
+└───────────────────────────┬────────────────────────────┘
+                            │
+               TCP Port 3306│ (Internal Private Network)
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│            DATABASE (Hosted on RAILWAY MYSQL)          │
+│  • Managed MySQL 8 Database                            │
+│  • Schema: nivaas_db.sql                               │
+│  • Tables: Users, Properties, Images, Reviews, etc.    │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Owner dashboard features
-
-### Post property — `/dashboard/properties/new`
-
-4-step wizard:
-
-1. **Basic info** — title, property type, listing type, description
-2. **Configuration** — bedrooms, bathrooms, area, furnished status, amenity checkboxes (20 options)
-3. **Location** — city (dropdown), locality (required), full address
-4. **Pricing** — rent/sale price, security deposit, live summary card
-
-Each step validates required fields before advancing. On submit the row is inserted into `public.properties` with `status = 'active'`.
-
-### My listings — `/dashboard/properties`
-
-Live table of the owner's properties fetched from Supabase, ordered newest-first. Features:
-
-- Thumbnail from `images[0]` (placeholder icon if none)
-- Status badge: Active (green) / Inactive (grey) / Rented (blue) / Pending review (amber)
-- Verified badge when `verified = true`
-- Per-row action menu: **View listing** · **Activate / Deactivate** · **Delete** (with confirmation dialog)
-- Refresh button
-- Empty state with CTA to post the first listing
+## Step-by-Step Live Deployment Guide
 
 ---
 
-## Getting started
+### Phase 1: Railway MySQL Database Setup
 
-### 1. Install dependencies
+1. **Sign in to Railway**:
+   - Go to [Railway.app](https://railway.app) and sign in with your GitHub account.
 
+2. **Create a New Project**:
+   - Click **`New Project`** (or **`+ New`**).
+   - Select **`Provision MySQL`**.
+   - Railway will provision a dedicated MySQL database within seconds.
+
+3. **Get MySQL Connection Details**:
+   - Click on the **MySQL** card in your project canvas.
+   - Go to the **`Variables`** tab to see your credentials:
+     - `MYSQLHOST`
+     - `MYSQLUSER`
+     - `MYSQLPASSWORD`
+     - `MYSQLDATABASE`
+     - `MYSQLPORT`
+     - `MYSQL_URL` (Full connection string)
+   - Go to the **`Connect`** tab and copy the **Public URL** or connection command.
+
+4. **Import Database Schema (`nivaas_db.sql`)**:
+   You can import the database schema using either of these simple methods:
+
+   - **Option A (Railway Dashboard - Easiest)**:
+     1. Click the MySQL box on Railway.
+     2. Open the **`Data`** tab.
+     3. Open your local [`nivaas_db.sql`](./nivaas_db.sql) file in VS Code / Notepad.
+     4. Copy all contents, paste into Railway's SQL Query runner, and click **Run Query**.
+
+   - **Option B (Using TablePlus / DBeaver / MySQL Workbench)**:
+     1. In Railway MySQL > **Connect**, copy the **Public Connection URL**.
+     2. Open TablePlus / DBeaver, create a new connection, and paste the connection string.
+     3. Open [`nivaas_db.sql`](./nivaas_db.sql) and execute the script.
+
+   - **Option C (Using Command Line / Terminal)**:
+     ```bash
+     mysql -h <MYSQLHOST> -u <MYSQLUSER> -p<MYSQLPASSWORD> -P <MYSQLPORT> <MYSQLDATABASE> < nivaas_db.sql
+     ```
+
+---
+
+### Phase 2: Railway Backend API Deployment
+
+1. **Push your Code to GitHub**:
+   If you have not already pushed your code to a GitHub repository:
+   ```bash
+   git init
+   git add .
+   git commit -m "Initial commit for Vercel and Railway live deployment"
+   git branch -M main
+   git remote add origin https://github.com/<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY_NAME>.git
+   git push -u origin main
+   ```
+   *(If you already have a GitHub repo, simply run `git add .`, `git commit -m "Ready for live deployment"`, and `git push origin main`)*.
+
+2. **Add Backend Service on Railway**:
+   - In the same Railway project where your MySQL database is running:
+   - Click **`+ New`** > **`GitHub Repo`**.
+   - Select your repository (`rental-website-main-fixed` or your repo name).
+
+3. **Configure the Service Settings**:
+   - Click on the newly created service card.
+   - Go to the **`Settings`** tab:
+     - **Root Directory**: Set to `/server` *(Very important: This tells Railway to build and run the backend code in the `server` folder)*.
+     - **Build Command**: Leave default (or `npm install`).
+     - **Start Command**: `npm start` (or `node index.js`).
+
+4. **Add Environment Variables**:
+   - In the service card, switch to the **`Variables`** tab.
+   - Click **`Add Variable`** or **`Raw Editor`** and add:
+
+   | Key | Value | Description |
+   |---|---|---|
+   | `MYSQL_URL` | `${{MySQL.MYSQL_URL}}` | Select "Add Reference" to your Railway MySQL service |
+   | `JWT_SECRET` | `nivaas_super_secret_jwt_key_live_2026_production` | Strong random secret string |
+   | `PORT` | `4000` | Railway port |
+   | `CLIENT_URL` | `https://*.vercel.app` | Will be updated with your exact Vercel URL in Phase 4 |
+   | `NODE_ENV` | `production` | Production mode |
+
+   > **Note on MySQL Reference**: Railway allows you to reference variables between services. If you type `${{MySQL.MYSQL_URL}}`, Railway will automatically link the database credentials!
+
+5. **Generate a Public Domain for your API**:
+   - Go to the **`Networking`** (or **Settings > Public Networking**) section of your backend service.
+   - Click **`Generate Domain`**.
+   - You will receive a URL like:
+     ```
+     https://nivaas-server-production-xxxx.up.railway.app
+     ```
+   - **Test it in your browser**:
+     Visit: `https://nivaas-server-production-xxxx.up.railway.app/api/properties`
+     *(You should receive a JSON response with status 200 and properties list!)*
+
+---
+
+### Phase 3: Vercel Frontend Deployment
+
+1. **Sign in to Vercel**:
+   - Go to [Vercel.com](https://vercel.com) and log in with your GitHub account.
+
+2. **Import Repository**:
+   - Click **`Add New...`** > **`Project`**.
+   - Find your GitHub repository and click **`Import`**.
+
+3. **Configure Project Settings**:
+   - **Framework Preset**: `Vite` (automatically detected).
+   - **Root Directory**: `./` (Default root).
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist` (or default).
+   - **Install Command**: `npm install`
+
+4. **Add Environment Variables**:
+   - In the **Environment Variables** section on Vercel, add:
+
+   | Variable Name | Value |
+   |---|---|
+   | `VITE_API_URL` | `https://nivaas-server-production-xxxx.up.railway.app/api` |
+
+   *(Replace `nivaas-server-production-xxxx.up.railway.app` with the real domain Railway gave you in Phase 2)*.
+
+5. **Deploy**:
+   - Click **`Deploy`**.
+   - Vercel will build the frontend and provide your live URL (e.g., `https://nivaas-rental.vercel.app`).
+
+---
+
+### Phase 4: Connect & Enable CORS
+
+Now link the two deployments together so they can communicate seamlessly:
+
+1. **Update `CLIENT_URL` in Railway**:
+   - Go back to [Railway.app](https://railway.app) > Backend Service > **`Variables`**.
+   - Edit `CLIENT_URL` and set it to your exact Vercel production domain:
+     ```env
+     CLIENT_URL=https://nivaas-rental.vercel.app
+     ```
+   - Railway will automatically redeploy with the updated CORS policy.
+
+2. **Verify Full Application Functionality**:
+   - Open your Vercel URL in your mobile browser and desktop browser.
+   - **Check**:
+     1. Homepage property carousels load properly with live images.
+     2. Mobile `<` and `>` arrow buttons scroll smoothly.
+     3. Search filters (Rent, Buy, Short-Term, PG) return matching properties.
+     4. User registration & Login work with JWT authentication.
+     5. Saved properties, inquiry submissions, and property listings function without errors.
+
+---
+
+## Environment Variables Reference
+
+### Backend (Railway)
+
+```env
+# Database (Auto-populated if using Railway MySQL Reference)
+MYSQL_URL=mysql://root:password@mysql.railway.internal:3306/railway
+# Or individual fields:
+DB_HOST=mysql.railway.internal
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your_password
+DB_NAME=railway
+
+# Server Configuration
+PORT=4000
+NODE_ENV=production
+JWT_SECRET=generate_a_random_64_character_string_here
+
+# Frontend CORS URL
+CLIENT_URL=https://your-nivaas-app.vercel.app
+```
+
+### Frontend (Vercel)
+
+```env
+# URL pointing to your Railway backend API
+VITE_API_URL=https://your-backend-service.up.railway.app/api
+```
+
+---
+
+## Local Development Setup
+
+If you want to run the project locally on your development machine:
+
+### 1. Start Local MySQL Database
+Create a MySQL database named `nivaas` and import `nivaas_db.sql`:
 ```bash
-bun install
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS nivaas;"
+mysql -u root -p nivaas < nivaas_db.sql
 ```
 
-### 2. Set environment variables
-
-Create a `.env` file at the project root (a template is committed as `.env`):
-
-```
-VITE_SUPABASE_URL=https://<your-project>.supabase.co
-VITE_SUPABASE_PUBLISHABLE_KEY=<your-anon-key>
-```
-
-### 3. Run the database schema
-
-Open the Supabase SQL editor and run `nivaas.sql` (in the project root). It creates all tables, enums, RLS policies, indexes, triggers, and seed data.
-
-### 4. Start the dev server
-
+### 2. Start Backend API
 ```bash
-bun run dev
+cd server
+npm install
+npm run dev
 ```
+Backend runs at: `http://localhost:4000/api`
 
-The app starts at `http://localhost:3000`.
-
----
-
-## Environment variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `VITE_SUPABASE_URL` | Yes | Your Supabase project URL |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Yes | Anon/publishable key |
+### 3. Start Frontend
+In a new terminal window at the project root:
+```bash
+npm install
+npm run dev
+```
+Frontend runs at: `http://localhost:5173`
 
 ---
 
-## Scripts
+## Troubleshooting & FAQs
 
-| Command | Description |
-|---|---|
-| `bun run dev` | Start development server |
-| `bun run build` | Production build |
-| `bun run preview` | Preview production build locally |
+### Q1: API calls return `Network Error` or `CORS Error`
+- **Cause**: The backend does not allow requests from your Vercel domain.
+- **Fix**: Check `CLIENT_URL` in your Railway backend variables. Ensure it matches your Vercel domain exactly (e.g. `https://nivaas-app.vercel.app`, with no trailing slash). Note that Railway already allows all `*.vercel.app` domains automatically.
 
+### Q2: Images uploaded by users are not showing up
+- **Cause**: Image uploads are stored in `server/uploads/`.
+- **Fix**: When uploading images, the backend serves them statically at `https://your-railway-domain.up.railway.app/uploads/...`. Ensure your backend service is running and `server/uploads` directory is accessible.
 
-## 
+### Q3: Vercel shows 404 when refreshing sub-pages (e.g. `/properties`)
+- **Cause**: Single-page application routing needs all URL paths redirected to `index.html`.
+- **Fix**: Ensure `vercel.json` exists in your repository root with rewrite rules:
+  ```json
+  {
+    "rewrites": [
+      {
+        "source": "/((?!assets|uploads|favicon.ico).*)",
+        "destination": "/index.html"
+      }
+    ]
+  }
+  ```
+
+### Q4: Database tables are missing columns
+- **Fix**: The backend automatically runs schema extension migrations on startup (`initSchemaExtensions()` in `server/db.js`), ensuring tables and columns are created even if omitted from the initial import.
+
+---
+
+## License
+
+This project is licensed under the MIT License.
