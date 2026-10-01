@@ -60,10 +60,9 @@ const PAGE_SIZE  = 50;   // fetch up to 50 properties at once for map
 const LIST_WIDTH = 420;  // px — left column width on desktop
 
 const LISTING_TYPES = [
-  { value: "rent",       label: "Rent"       },
-  { value: "sale",       label: "Buy"        },
-  { value: "pg",         label: "PG"         },
-  { value: "short_term", label: "Short-Term" },
+  { value: "rent", label: "Rent" },
+  { value: "sale", label: "Buy"  },
+  { value: "pg",   label: "PG"   },
 ];
 
 const PROPERTY_TYPES = ["Apartment", "Villa", "PG", "Office Space", "Plot"];
@@ -118,17 +117,14 @@ function hasActiveFilters(f: FilterState): boolean {
 
 // ─── Pill helper ───────────────────────────────────────────────────────────────
 
-function pill(active: boolean, gold = false, customColor?: string): React.CSSProperties {
-  const activeBg = customColor ? customColor : (gold ? "#fef3d4" : "#1a1209");
-  const activeBorder = customColor ? customColor : (gold ? GOLD : "#1a1209");
-  const activeColor = customColor ? "#fff" : (gold ? GOLD : "#fff");
+function pill(active: boolean, gold = false): React.CSSProperties {
   return {
     borderRadius: 999, padding: "5px 13px", fontSize: 12, fontWeight: 600,
     cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" as const,
     transition: "all 0.15s",
-    border: `1px solid ${active ? activeBorder : (customColor ? `${customColor}66` : "#d4c4a0")}`,
-    background: active ? activeBg : "#fff",
-    color: active ? activeColor : (customColor ? customColor : "#5a3e1b"),
+    border: `1px solid ${active ? (gold ? GOLD : "#1a1209") : "#d4c4a0"}`,
+    background: active ? (gold ? "#fef3d4" : "#1a1209") : "#fff",
+    color: active ? (gold ? GOLD : "#fff") : "#5a3e1b",
     boxShadow: "0 1px 3px rgba(0,0,0,0.07)",
   };
 }
@@ -276,19 +272,15 @@ function FilterBar({
         <div style={{ width: 1, height: 18, background: "#e8d9c0", flexShrink: 0 }} />
 
         {/* Listing type */}
-        {LISTING_TYPES.map((lt) => {
-          const isShortTerm = lt.value === "short_term";
-          const active = filters.listing_type === lt.value;
-          return (
-            <button
-              key={lt.value}
-              onClick={() => onChange({ listing_type: active ? "all" : lt.value })}
-              style={pill(active, false, isShortTerm ? "#7C3AED" : undefined)}
-            >
-              {lt.label}
-            </button>
-          );
-        })}
+        {LISTING_TYPES.map((lt) => (
+          <button
+            key={lt.value}
+            onClick={() => onChange({ listing_type: filters.listing_type === lt.value ? "all" : lt.value })}
+            style={pill(filters.listing_type === lt.value)}
+          >
+            {lt.label}
+          </button>
+        ))}
 
         {/* Property type */}
         {PROPERTY_TYPES.map((pt) => (
@@ -392,11 +384,11 @@ function MapPropertyListCard({
           )}
           <span style={{
             position: "absolute", top: 7, left: 7,
-            background: p.listing_type === "rent" ? "#1a1209" : p.listing_type === "sale" ? GOLD : p.listing_type === "short_term" ? "#7C3AED" : "#6b4f2a",
+            background: p.listing_type === "rent" ? "#1a1209" : p.listing_type === "sale" ? GOLD : "#6b4f2a",
             color: "#fff", borderRadius: 999, padding: "2px 7px",
             fontSize: 9, fontWeight: 700, textTransform: "uppercase",
           }}>
-            {p.listing_type === "sale" ? "Buy" : p.listing_type === "pg" ? "PG" : p.listing_type === "short_term" ? "Short-Term" : "Rent"}
+            {p.listing_type === "sale" ? "Buy" : p.listing_type === "pg" ? "PG" : "Rent"}
           </span>
           <button
             onClick={(e) => e.preventDefault()}
@@ -440,14 +432,10 @@ function MapPropertyListCard({
           </div>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 6 }}>
             <span style={{ fontSize: 14, fontWeight: 800, color: "#1a1209" }}>
-              {p.listing_type === "short_term" && (p as ApiProperty).short_term_price
-                ? formatINR((p as ApiProperty).short_term_price!)
-                : formatINR(p.price)}
-              {p.listing_type === "short_term"
-                ? <span style={{ fontSize: 10, fontWeight: 400, color: "#a08858" }}>/wk</span>
-                : p.listing_type !== "sale" && (
-                  <span style={{ fontSize: 10, fontWeight: 400, color: "#a08858" }}>/mo</span>
-                )}
+              {formatINR(p.price)}
+              {p.listing_type !== "sale" && (
+                <span style={{ fontSize: 10, fontWeight: 400, color: "#a08858" }}>/mo</span>
+              )}
             </span>
             {p.avg_rating != null && (
               <span style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, color: "#1a1209", fontWeight: 600 }}>
@@ -674,7 +662,7 @@ function MapSearchPage() {
     : [23.02, 72.57];
   const initZoom = initCoords ? initCoords.zoom : 11;
 
-  const bodyHeight = `calc(100dvh - ${NAVBAR_H + FILTER_H}px)`;
+  const bodyHeight = `calc(100vh - ${NAVBAR_H + FILTER_H}px)`;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -906,36 +894,6 @@ function MapSearchPage() {
               {totalCount} home{totalCount !== 1 ? "s" : ""} in this area
             </div>
           )}
-
-          {/* Map Pin Color Legend (bottom-right) */}
-          <div
-            style={{
-              position: "absolute", bottom: 14, right: 12, zIndex: 901,
-              background: "rgba(255,255,255,0.95)", border: "1px solid #e8d9c0",
-              borderRadius: 999, padding: "5px 12px",
-              display: "flex", alignItems: "center", gap: 10,
-              fontSize: 11, fontWeight: 700, color: "#1a1209",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-              backdropFilter: "blur(4px)",
-            }}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#1a1209" }} />
-              Rent
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: GOLD }} />
-              Buy
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#6b4f2a" }} />
-              PG
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4, color: "#7C3AED" }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#7C3AED" }} />
-              Short-Term
-            </span>
-          </div>
         </div>
       </div>
 

@@ -142,10 +142,10 @@ router.get("/trending", async (_req, res) => {
          p.city,
          p.property_type,
          p.listing_type,
-         COUNT(p.id)          AS count,
-         ROUND(AVG(p.price))  AS avg_price,
-         ROUND(MIN(p.price))  AS min_price,
-         ROUND(MAX(p.price))  AS max_price
+         COUNT(p.id)                   AS count,
+         ROUND(AVG(p.price)::numeric)  AS avg_price,
+         ROUND(MIN(p.price)::numeric)  AS min_price,
+         ROUND(MAX(p.price)::numeric)  AS max_price
        FROM nivaas_properties p
        WHERE p.status = 'active'
        GROUP BY p.city, p.property_type, p.listing_type

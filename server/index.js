@@ -4,28 +4,20 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// ─── __dirname in ESM ─────────────────────────────────────────────────────────
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-
-// Load server/.env and root .env explicitly
-dotenv.config({ path: path.join(__dirname, ".env") });
-dotenv.config({ path: path.join(__dirname, "..", ".env") });
 dotenv.config();
-
-if (!process.env.JWT_SECRET) {
-  process.env.JWT_SECRET = "nivaas_super_secret_jwt_key_change_in_production";
-}
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
+
+// ─── __dirname in ESM ─────────────────────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 const allowedOrigins = [
   "http://localhost:8080",
   "http://localhost:5173",
   "http://localhost:4173",
-  "http://localhost:3000",
   process.env.CLIENT_URL,       // production Vercel URL
 ].filter(Boolean);
 
@@ -33,11 +25,9 @@ app.use(cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (mobile apps, curl, server-to-server)
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    // Allow any localhost / 127.0.0.1 port for local development
-    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return cb(null, true);
     // Also allow any *.vercel.app preview URLs
     if (/\.vercel\.app$/.test(origin)) return cb(null, true);
-    cb(null, false);
+    cb(new Error("CORS: origin not allowed — " + origin));
   },
   credentials: true,
 }));
@@ -99,7 +89,7 @@ app.use("/api/leads",               leadsRouter);
 
 // Health check
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString(), db: "mysql/local" });
+  res.json({ status: "ok", time: new Date().toISOString(), db: "supabase/postgresql" });
 });
 
 // 404

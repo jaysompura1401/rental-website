@@ -77,8 +77,8 @@ function VerifyOTPPage() {
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
     const code = otp.join("");
-    if (code.length !== 6) { toast.error("(OTP Code) this field is req."); return; }
-    if (!email) { toast.error("(Email) this field is req."); return; }
+    if (code.length !== 6) { toast.error("Enter all 6 digits"); return; }
+    if (!email) { toast.error("Email missing — sign in again"); return; }
     if (loading || submitted) return;   // prevent duplicate submissions
     setSubmitted(true);
     setLoading(true);

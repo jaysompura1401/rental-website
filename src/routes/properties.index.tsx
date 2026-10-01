@@ -85,7 +85,7 @@ function PersonalisedBanner({
   onClear: () => void;
 }) {
   const parts: string[] = [];
-  if (req.listing_type)  parts.push(req.listing_type === "sale" ? "Buy" : req.listing_type === "pg" ? "PG" : req.listing_type === "short_term" ? "Short-Term" : "Rent");
+  if (req.listing_type)  parts.push(req.listing_type === "sale" ? "Buy" : req.listing_type === "pg" ? "PG" : "Rent");
   if (req.bedrooms !== null) parts.push(req.bedrooms === 0 ? "Studio" : req.bedrooms === 4 ? "4+ BHK" : `${req.bedrooms} BHK`);
   if (req.property_type && req.property_type !== "Other") parts.push(req.property_type);
   if (req.location)      parts.push(req.location);
@@ -309,7 +309,7 @@ function PropertiesList() {
   // ── Active filter chips ────────────────────────────────────────────────────
   const activeChips: { label: string; clear: () => void }[] = [];
   if (filters.property_type !== "All")   activeChips.push({ label: filters.property_type, clear: () => updateFilter("property_type", "All") });
-  if (filters.listing_type  !== "all")   activeChips.push({ label: filters.listing_type === "short_term" ? "Short-Term" : filters.listing_type.toUpperCase(), clear: () => updateFilter("listing_type", "all") });
+  if (filters.listing_type  !== "all")   activeChips.push({ label: filters.listing_type.toUpperCase(), clear: () => updateFilter("listing_type", "all") });
   if (filters.city          !== "All")   activeChips.push({ label: filters.city, clear: () => updateFilter("city", "All") });
   if (filters.pincode)                   activeChips.push({ label: `PIN: ${filters.pincode}`, clear: () => updateFilter("pincode", "") });
   if (filters.furnished)                 activeChips.push({ label: "Furnished", clear: () => updateFilter("furnished", false) });
@@ -384,8 +384,9 @@ function PropertiesList() {
               />
             </div>
 
+            {/* Rent / Buy / PG toggle */}
             <div className="flex gap-1 p-1 bg-secondary rounded-lg shrink-0">
-              {[["all","All"],["rent","Rent"],["sale","Buy"],["pg","PG"],["short_term","Short-Term"]].map(([v,l]) => (
+              {[["all","All"],["rent","Rent"],["sale","Buy"],["pg","PG"]].map(([v,l]) => (
                 <button
                   key={v}
                   onClick={() => updateFilter("listing_type", v)}
@@ -635,7 +636,6 @@ function PropertiesList() {
                 <PropertyCard
                   key={p.id}
                   p={p}
-                  fluid
                   matchResult={isPersonalised && p.matchResult ? p.matchResult : undefined}
                 />
               ))}

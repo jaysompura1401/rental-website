@@ -8,7 +8,6 @@
  */
 
 import { useState, useEffect } from "react";
-import { toast } from "sonner";
 import {
   X, ArrowRight, ArrowLeft, Sparkles,
   MapPin, Building2, Check, BedDouble,
@@ -136,13 +135,6 @@ const BUDGET_PRESETS_BUY = [
   { label: "₹1Cr–₹2Cr",  min: 10_000_000,  max: 20_000_000  },
   { label: "Above ₹2Cr",  min: 20_000_000,  max: 0           },
 ];
-const BUDGET_PRESETS_SHORT_TERM = [
-  { label: "Under ₹5k/wk",  min: 0,      max: 5_000  },
-  { label: "₹5k–₹10k/wk",   min: 5_000,  max: 10_000 },
-  { label: "₹10k–₹20k/wk",  min: 10_000, max: 20_000 },
-  { label: "₹20k–₹35k/wk",  min: 20_000, max: 35_000 },
-  { label: "Above ₹35k/wk", min: 35_000, max: 0      },
-];
 
 const AMENITY_OPTIONS = [
   "Parking", "Gym", "Swimming Pool", "Lift / Elevator",
@@ -230,36 +222,13 @@ export function RequirementWizard({ onComplete, onClose }: RequirementWizardProp
   };
 
   const goNext = () => {
-    if (step === 0) {
-      if (!req.listing_type) {
-        toast.error("(Listing Type) this field is req.");
-        return;
-      }
-      if (!req.property_type) {
-        toast.error("(Property Type) this field is req.");
-        return;
-      }
-    }
-    if (step === 4) {
-      if (!name.trim()) {
-        toast.error("(Full Name) this field is req.");
-        return;
-      }
-      if (!phone.trim() || phone.trim().length < 7) {
-        toast.error("(Phone Number) this field is req.");
-        return;
-      }
-    }
     if (step < TOTAL_STEPS - 1) setStep(s => s + 1);
     else handleFinish();
   };
 
   const goBack = () => setStep(s => s - 1);
 
-  const budgetPresets =
-    req.listing_type === "sale" ? BUDGET_PRESETS_BUY :
-    req.listing_type === "short_term" ? BUDGET_PRESETS_SHORT_TERM :
-    BUDGET_PRESETS_RENT;
+  const budgetPresets = req.listing_type === "sale" ? BUDGET_PRESETS_BUY : BUDGET_PRESETS_RENT;
 
   // ── Step bodies ──────────────────────────────────────────────────────────────
   const body = () => {
@@ -273,17 +242,13 @@ export function RequirementWizard({ onComplete, onClose }: RequirementWizardProp
               <p className="text-[11px] font-bold uppercase tracking-widest mb-3" style={{ color: MUTED }}>
                 Looking to
               </p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="grid grid-cols-3 gap-2.5">
                 {[
-                  { value: "rent",       label: "Rent",                emoji: "🔑" },
-                  { value: "sale",       label: "Buy",                 emoji: "🏡" },
-                  { value: "pg",         label: "PG / Co-living",      emoji: "🛏️" },
-                  { value: "short_term", label: "Short-Term Property", emoji: "⏱️" },
+                  { value: "rent", label: "Rent",          emoji: "🔑" },
+                  { value: "sale", label: "Buy",            emoji: "🏡" },
+                  { value: "pg",   label: "PG / Co-living", emoji: "🛏️" },
                 ].map(o => {
                   const sel = req.listing_type === o.value;
-                  const isSt = o.value === "short_term";
-                  const activeColor = isSt ? "#7C3AED" : GOLD;
-                  const activeLight = isSt ? "#ede9fe" : GOLD_LIGHT;
                   return (
                     <button key={o.value} type="button"
                       onClick={() => {
@@ -291,18 +256,18 @@ export function RequirementWizard({ onComplete, onClose }: RequirementWizardProp
                         if (o.value === "pg") update("property_type", "PG");
                         else if (req.property_type === "PG") update("property_type", "");
                       }}
-                      className="flex flex-col items-center gap-2 rounded-2xl border-2 px-2.5 py-4 text-center transition-all duration-200"
+                      className="flex flex-col items-center gap-2 rounded-2xl border-2 px-3 py-4 text-center transition-all duration-200"
                       style={{
-                        borderColor:     sel ? activeColor : GOLD_BORDER,
-                        backgroundColor: sel ? activeLight : "#fff",
-                        boxShadow:       sel ? `0 4px 14px ${isSt ? "rgba(124,58,237,0.22)" : "rgba(201,146,26,0.18)"}` : undefined,
+                        borderColor:     sel ? GOLD : GOLD_BORDER,
+                        backgroundColor: sel ? GOLD_LIGHT : "#fff",
+                        boxShadow:       sel ? "0 4px 14px rgba(201,146,26,0.18)" : undefined,
                         transform:       sel ? "translateY(-1px)" : undefined,
                       }}
                     >
                       <span className="text-2xl">{o.emoji}</span>
                       <span className="font-bold text-xs" style={{ color: DARK }}>{o.label}</span>
                       {sel && (
-                        <span className="flex h-4 w-4 items-center justify-center rounded-full" style={{ backgroundColor: activeColor }}>
+                        <span className="flex h-4 w-4 items-center justify-center rounded-full" style={{ backgroundColor: GOLD }}>
                           <Check className="h-2.5 w-2.5 text-white" />
                         </span>
                       )}
@@ -468,7 +433,7 @@ export function RequirementWizard({ onComplete, onClose }: RequirementWizardProp
             </div>
             <div>
               <label className="text-[11px] font-bold uppercase tracking-widest mb-2.5 block" style={{ color: MUTED }}>
-                {req.listing_type === "sale" ? "Budget" : req.listing_type === "short_term" ? "Weekly budget" : "Monthly rent"}
+                {req.listing_type === "sale" ? "Budget" : "Monthly rent"}
               </label>
               <div className="flex flex-wrap gap-2">
                 {budgetPresets.map(bp => (
@@ -724,9 +689,9 @@ export function RequirementWizard({ onComplete, onClose }: RequirementWizardProp
           {/* Continue / Finish */}
           <button
             onClick={goNext}
-            disabled={saving}
-            className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-bold text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-            style={{ backgroundColor: GOLD, boxShadow: "0 4px 16px rgba(201,146,26,0.38)" }}
+            disabled={!canAdvance() || saving}
+            className="flex-1 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-bold text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ backgroundColor: GOLD, boxShadow: canAdvance() ? "0 4px 16px rgba(201,146,26,0.38)" : undefined }}
           >
             {saving ? (
               <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>

@@ -50,12 +50,8 @@ function NewComplaintDialog({ onCreated }: { onCreated: () => void }) {
   });
 
   const handleSubmit = async () => {
-    if (!form.subject.trim()) {
-      toast.error("(Subject) this field is req.");
-      return;
-    }
-    if (!form.description.trim()) {
-      toast.error("(Description) this field is req.");
+    if (!form.subject.trim() || !form.description.trim()) {
+      toast.error("Subject and description are required");
       return;
     }
     setSaving(true);

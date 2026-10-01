@@ -216,7 +216,7 @@ function AgentVerificationPanel() {
     if (propertyPhotos.length === 0) missing.push("Property Verification Photos");
 
     if (missing.length > 0) {
-      missing.forEach(item => toast.error(`(${item}) this field is req.`));
+      toast.error(`Please complete all requirements:\n• ${missing.join("\n• ")}`);
       return;
     }
 

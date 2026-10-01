@@ -180,17 +180,17 @@ function checkCityMatch(nominatimData, declaredCity) {
   return { match: matched, pinCity };
 }
 
-// ─── Upsert location row (MySQL ON DUPLICATE KEY UPDATE syntax) ──────────────
+// ─── Upsert location row (PostgreSQL ON CONFLICT syntax) ──────────────────────
 async function upsertPropertyLocation(propertyId, googleMapsUrl, lat, lng) {
   await pool.query(
     `INSERT INTO nivaas_property_locations
        (id, property_id, google_maps_url, latitude, longitude)
-     VALUES (UUID(), ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       google_maps_url = VALUES(google_maps_url),
-       latitude        = VALUES(latitude),
-       longitude       = VALUES(longitude),
-       updated_at      = CURRENT_TIMESTAMP`,
+     VALUES (gen_random_uuid(), ?, ?, ?, ?)
+     ON CONFLICT (property_id) DO UPDATE SET
+       google_maps_url = EXCLUDED.google_maps_url,
+       latitude        = EXCLUDED.latitude,
+       longitude       = EXCLUDED.longitude,
+       updated_at      = NOW()`,
     [propertyId, googleMapsUrl, lat, lng]
   );
 }
@@ -212,11 +212,11 @@ router.get("/", optionalAuth, async (req, res) => {
     const whereParams = [];
 
     if (city)           { where += " AND p.city = ?";            whereParams.push(city); }
-    if (locality)       { where += " AND p.locality LIKE ?";     whereParams.push(`%${locality}%`); }
+    if (locality)       { where += " AND p.locality ILIKE ?";    whereParams.push(`%${locality}%`); }
     if (listing_type)   { where += " AND p.listing_type = ?";    whereParams.push(listing_type); }
     if (property_type)  { where += " AND p.property_type = ?";   whereParams.push(property_type); }
-    if (min_price)      { where += " AND COALESCE(NULLIF(p.short_term_price, 0), p.price) >= ?"; whereParams.push(Number(min_price)); }
-    if (max_price)      { where += " AND COALESCE(NULLIF(p.short_term_price, 0), p.price) <= ?"; whereParams.push(Number(max_price)); }
+    if (min_price)      { where += " AND p.price >= ?";          whereParams.push(Number(min_price)); }
+    if (max_price)      { where += " AND p.price <= ?";          whereParams.push(Number(max_price)); }
     if (furnished)      { where += " AND p.furnished = ?";       whereParams.push(furnished); }
     if (bedrooms)       { where += " AND p.bedrooms = ?";        whereParams.push(Number(bedrooms)); }
     if (available_from) {
@@ -224,22 +224,22 @@ router.get("/", optionalAuth, async (req, res) => {
       whereParams.push(available_from);
     }
     if (q) {
-      where += " AND (p.title LIKE ? OR p.locality LIKE ? OR p.city LIKE ? OR p.address LIKE ? OR p.pincode LIKE ?)";
+      where += " AND (p.title ILIKE ? OR p.locality ILIKE ? OR p.city ILIKE ? OR p.address ILIKE ? OR p.pincode ILIKE ?)";
       const like = `%${q}%`;
       whereParams.push(like, like, like, like, like);
     }
     if (pincode) {
-      where += " AND p.pincode LIKE ?";
+      where += " AND p.pincode ILIKE ?";
       whereParams.push(`%${pincode}%`);
     }
 
-    if (lat_min !== undefined) { where += " AND COALESCE(pl.latitude, p.latitude) >= ?";  whereParams.push(Number(lat_min)); }
-    if (lat_max !== undefined) { where += " AND COALESCE(pl.latitude, p.latitude) <= ?";  whereParams.push(Number(lat_max)); }
-    if (lng_min !== undefined) { where += " AND COALESCE(pl.longitude, p.longitude) >= ?"; whereParams.push(Number(lng_min)); }
-    if (lng_max !== undefined) { where += " AND COALESCE(pl.longitude, p.longitude) <= ?"; whereParams.push(Number(lng_max)); }
+    if (lat_min !== undefined) { where += " AND pl.latitude >= ?";  whereParams.push(Number(lat_min)); }
+    if (lat_max !== undefined) { where += " AND pl.latitude <= ?";  whereParams.push(Number(lat_max)); }
+    if (lng_min !== undefined) { where += " AND pl.longitude >= ?"; whereParams.push(Number(lng_min)); }
+    if (lng_max !== undefined) { where += " AND pl.longitude <= ?"; whereParams.push(Number(lng_max)); }
 
     if (has_coords === "true") {
-      where += " AND (pl.property_id IS NOT NULL OR (p.latitude IS NOT NULL AND p.longitude IS NOT NULL))";
+      where += " AND pl.property_id IS NOT NULL";
     }
 
     // COUNT query
@@ -256,7 +256,7 @@ router.get("/", optionalAuth, async (req, res) => {
         p.*,
         u.full_name  AS owner_name,
         u.phone      AS owner_phone,
-        ROUND(AVG(r.rating), 1)          AS avg_rating,
+        ROUND(AVG(r.rating)::numeric, 1) AS avg_rating,
         COUNT(DISTINCT r.id)             AS review_count,
         pl.google_maps_url               AS location_google_maps_url,
         pl.latitude                      AS location_latitude,
@@ -269,9 +269,8 @@ router.get("/", optionalAuth, async (req, res) => {
       GROUP BY p.id, u.full_name, u.phone, pl.latitude, pl.longitude, pl.google_maps_url
     `;
 
-    const effectivePrice = "COALESCE(NULLIF(p.short_term_price, 0), p.price)";
-    if (sort === "price_asc")       sql += ` ORDER BY ${effectivePrice} ASC`;
-    else if (sort === "price_desc") sql += ` ORDER BY ${effectivePrice} DESC`;
+    if (sort === "price_asc")       sql += " ORDER BY p.price ASC";
+    else if (sort === "price_desc") sql += " ORDER BY p.price DESC";
     else                            sql += " ORDER BY p.created_at DESC";
 
     sql += " LIMIT ? OFFSET ?";
@@ -283,12 +282,12 @@ router.get("/", optionalAuth, async (req, res) => {
     const ids = rows.map(r => r.id);
     let images = [];
     if (ids.length > 0) {
-      const placeholders = ids.map(() => "?").join(",");
-      const [imgRows] = await pool.query(
-        `SELECT property_id, url, is_cover, sort_order FROM nivaas_property_images WHERE property_id IN (${placeholders}) ORDER BY sort_order ASC`,
-        ids
+      // pg doesn't support IN (?) with array — use = ANY($1)
+      const result = await pool._pool.query(
+        "SELECT property_id, url, is_cover, sort_order FROM nivaas_property_images WHERE property_id = ANY($1) ORDER BY sort_order ASC",
+        [ids]
       );
-      images = imgRows;
+      images = result.rows;
     }
     const imgMap = {};
     images.forEach(img => {
@@ -297,8 +296,8 @@ router.get("/", optionalAuth, async (req, res) => {
     });
 
     const result = rows.map(p => {
-      const lat = p.location_latitude != null ? Number(p.location_latitude) : (p.latitude != null ? Number(p.latitude) : null);
-      const lng = p.location_longitude != null ? Number(p.location_longitude) : (p.longitude != null ? Number(p.longitude) : null);
+      const lat = p.location_latitude  != null ? Number(p.location_latitude)  : null;
+      const lng = p.location_longitude != null ? Number(p.location_longitude) : null;
       const hasExactLocation = lat !== null && lng !== null && !(lat === 0 && lng === 0);
       return {
         ...p,
@@ -330,7 +329,7 @@ router.get("/:id", optionalAuth, async (req, res) => {
          u.full_name AS owner_name, u.phone AS owner_phone,
          u.email AS owner_email, u.avatar_url AS owner_avatar,
          u.is_verified AS owner_verified,
-         ROUND(AVG(r.rating), 1)          AS avg_rating,
+         ROUND(AVG(r.rating)::numeric, 1) AS avg_rating,
          COUNT(DISTINCT r.id)             AS review_count,
          pl.google_maps_url               AS location_google_maps_url,
          pl.latitude                      AS location_latitude,
@@ -348,8 +347,8 @@ router.get("/:id", optionalAuth, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: "Property not found" });
     const property = rows[0];
 
-    const lat = property.location_latitude != null ? Number(property.location_latitude) : (property.latitude != null ? Number(property.latitude) : null);
-    const lng = property.location_longitude != null ? Number(property.location_longitude) : (property.longitude != null ? Number(property.longitude) : null);
+    const lat = property.location_latitude  != null ? Number(property.location_latitude)  : null;
+    const lng = property.location_longitude != null ? Number(property.location_longitude) : null;
     const hasExactLocation = lat !== null && lng !== null && !(lat === 0 && lng === 0);
 
     property.latitude  = hasExactLocation ? lat : null;
@@ -441,7 +440,6 @@ router.post("/", requireAuth, async (req, res) => {
       pincode, price, deposit, maintenance_fee = 0,
       brokerage = 0, price_negotiable = 0, available_from, min_lease_months = 11,
       preferred_tenants, cover_image_url, rera_id, amenities = [],
-      short_term_from = null, short_term_to = null, short_term_price = null,
     } = req.body;
 
     const map_url   = req.body.map_url  || null;
@@ -454,8 +452,8 @@ router.post("/", requireAuth, async (req, res) => {
     const tour_model_url       = req.body.tour_model_url       || null;
     const tour_ai_panorama_url = req.body.tour_ai_panorama_url || null;
 
-    if (!title || !city || (listing_type !== "short_term" && (!price && price !== 0)) || (listing_type === "short_term" && !short_term_price)) {
-      return res.status(400).json({ error: "title, city and price (or short_term_price) are required" });
+    if (!title || !city || !price) {
+      return res.status(400).json({ error: "title, city and price are required" });
     }
 
     // Resolve coordinates
@@ -487,7 +485,7 @@ router.post("/", requireAuth, async (req, res) => {
       }
     }
 
-    // ── Core INSERT — with short-term fields ───────────────────────────────
+    // ── Core INSERT — without tour columns (migration may not have run yet) ──
     await pool.query(
       `INSERT INTO nivaas_properties
          (id, owner_id, title, description, property_type, listing_type, status,
@@ -496,8 +494,8 @@ router.post("/", requireAuth, async (req, res) => {
           locality, address, pincode, latitude, longitude, map_url, price, deposit,
           maintenance_fee, brokerage, price_negotiable, available_from,
           min_lease_months, preferred_tenants, cover_image_url, rera_id,
-          verified, verification_status, short_term_from, short_term_to, short_term_price)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          verified, verification_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id, req.user.id, title, description || null, property_type, listing_type, "active",
         bedrooms || null, bathrooms || null, balconies, area_sqft || null,
@@ -505,12 +503,11 @@ router.post("/", requireAuth, async (req, res) => {
         age_years || null, furnished, facing || null, parking_slots,
         city, state || null, locality || null, address || null, pincode || null,
         resolvedLat, resolvedLng, map_url,
-        price || 0, deposit || null,
+        price, deposit || null,
         maintenance_fee, brokerage, price_negotiable ? true : false,
         available_from || null, min_lease_months, preferred_tenants || null,
         cover_image_url || null, rera_id || null,
         false, "pending",
-        short_term_from || null, short_term_to || null, short_term_price ? Number(short_term_price) : null,
       ]
     );
 
@@ -529,8 +526,8 @@ router.post("/", requireAuth, async (req, res) => {
     }
 
     // Save location (only if exact coords exist)
-    if (resolvedLat && resolvedLng) {
-      await upsertPropertyLocation(id, map_url || "", resolvedLat, resolvedLng);
+    if (resolvedLat && resolvedLng && map_url) {
+      await upsertPropertyLocation(id, map_url, resolvedLat, resolvedLng);
     }
 
     // Amenities — frontend may send strings OR objects {name, icon, category}
@@ -540,15 +537,16 @@ router.post("/", requireAuth, async (req, res) => {
       .filter(Boolean);
 
     if (amenityNames.length > 0) {
-      const placeholders = amenityNames.map(() => "?").join(",");
-      const [amenRows] = await pool.query(
-        `SELECT id, name FROM nivaas_amenities WHERE name IN (${placeholders})`,
-        amenityNames
+      const result = await pool._pool.query(
+        `SELECT id, name FROM nivaas_amenities WHERE name = ANY($1)`,
+        [amenityNames]
       );
+      const amenRows = result.rows;
       for (const a of amenRows) {
         await pool.query(
-          `INSERT IGNORE INTO nivaas_property_amenities (property_id, amenity_id)
-           VALUES (?, ?)`,
+          `INSERT INTO nivaas_property_amenities (property_id, amenity_id)
+           VALUES (?, ?)
+           ON CONFLICT (property_id, amenity_id) DO NOTHING`,
           [id, a.id]
         );
       }
@@ -565,8 +563,8 @@ router.post("/", requireAuth, async (req, res) => {
     );
 
     const p = newProp[0];
-    const lat = p.location_latitude != null ? Number(p.location_latitude) : (p.latitude != null ? Number(p.latitude) : null);
-    const lng = p.location_longitude != null ? Number(p.location_longitude) : (p.longitude != null ? Number(p.longitude) : null);
+    const lat = p.location_latitude  != null ? Number(p.location_latitude)  : null;
+    const lng = p.location_longitude != null ? Number(p.location_longitude) : null;
     const hasLoc = lat !== null && lng !== null && !(lat === 0 && lng === 0);
 
     res.status(201).json({
@@ -601,7 +599,6 @@ router.patch("/:id", requireAuth, async (req, res) => {
       "title","description","property_type","listing_type","status","bedrooms","bathrooms",
       "area_sqft","carpet_area","furnished","city","locality","address","price","deposit",
       "cover_image_url","available_from","preferred_tenants","price_negotiable","map_url",
-      "short_term_from","short_term_to","short_term_price",
       // 3D / 360° tour fields
       "tour_type","tour_url","tour_model_url","tour_model_path",
       "tour_ai_panorama_url","tour_ai_source_images","tour_ai_status",
@@ -802,12 +799,11 @@ router.get("/owner/mine", requireAuth, async (req, res) => {
     const ids = rows.map(r => r.id);
     let allImages = [];
     if (ids.length > 0) {
-      const placeholders = ids.map(() => "?").join(",");
-      const [imgRows] = await pool.query(
-        `SELECT property_id, url, is_cover, sort_order FROM nivaas_property_images WHERE property_id IN (${placeholders}) ORDER BY is_cover DESC, sort_order ASC`,
-        ids
+      const result = await pool._pool.query(
+        "SELECT property_id, url, is_cover, sort_order FROM nivaas_property_images WHERE property_id = ANY($1) ORDER BY (is_cover::int) DESC, sort_order ASC",
+        [ids]
       );
-      allImages = imgRows;
+      allImages = result.rows;
     }
     // Build a map: property_id -> [url, url, ...]  (cover first, then by sort_order)
     const imgMap = {};

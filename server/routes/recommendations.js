@@ -263,38 +263,37 @@ async function attachImagesAndAmenities(rows) {
   const ids = rows.map(r => r.id);
 
   // Images
-  const placeholders = ids.map(() => "?").join(",");
-  const [imgRows] = await pool.query(
-    `SELECT property_id, url, is_cover, sort_order FROM nivaas_property_images WHERE property_id IN (${placeholders}) ORDER BY sort_order ASC`,
-    ids
+  const imgResult = await pool._pool.query(
+    "SELECT property_id, url, is_cover, sort_order FROM nivaas_property_images WHERE property_id = ANY($1) ORDER BY sort_order ASC",
+    [ids]
   );
   const imgMap = {};
-  imgRows.forEach(img => {
+  imgResult.rows.forEach(img => {
     if (!imgMap[img.property_id]) imgMap[img.property_id] = [];
     imgMap[img.property_id].push(img.url);
   });
 
   // Amenities
-  const [amenRows] = await pool.query(
+  const amenResult = await pool._pool.query(
     `SELECT pa.property_id, a.name, a.icon, a.category
      FROM nivaas_property_amenities pa
      JOIN nivaas_amenities a ON a.id = pa.amenity_id
-     WHERE pa.property_id IN (${placeholders})`,
-    ids
+     WHERE pa.property_id = ANY($1)`,
+    [ids]
   );
   const amenMap = {};
-  amenRows.forEach(a => {
+  amenResult.rows.forEach(a => {
     if (!amenMap[a.property_id]) amenMap[a.property_id] = [];
     amenMap[a.property_id].push({ name: a.name, icon: a.icon, category: a.category });
   });
 
   // Locations
-  const [locRows] = await pool.query(
-    `SELECT property_id, latitude, longitude, google_maps_url FROM nivaas_property_locations WHERE property_id IN (${placeholders})`,
-    ids
+  const locResult = await pool._pool.query(
+    "SELECT property_id, latitude, longitude, google_maps_url FROM nivaas_property_locations WHERE property_id = ANY($1)",
+    [ids]
   );
   const locMap = {};
-  locRows.forEach(l => { locMap[l.property_id] = l; });
+  locResult.rows.forEach(l => { locMap[l.property_id] = l; });
 
   return rows.map(p => {
     const loc = locMap[p.id];
@@ -349,9 +348,9 @@ router.get("/", requireAuth, async (req, res) => {
       const [popular] = await pool.query(
         `SELECT p.*,
                 u.full_name AS owner_name, u.phone AS owner_phone,
-                ROUND(AVG(r.rating), 1) AS avg_rating,
+                ROUND(AVG(r.rating)::numeric,1) AS avg_rating,
                 COUNT(DISTINCT r.id) AS review_count,
-                GROUP_CONCAT(DISTINCT pa.amenity_id) AS amenity_ids
+                STRING_AGG(pa.amenity_id::text, ',') AS amenity_ids
          FROM nivaas_properties p
          LEFT JOIN nivaas_users u ON u.id = p.owner_id
          LEFT JOIN nivaas_reviews r ON r.property_id = p.id
@@ -418,9 +417,9 @@ router.get("/", requireAuth, async (req, res) => {
     const [candidates] = await pool.query(
       `SELECT p.*,
               u.full_name AS owner_name, u.phone AS owner_phone,
-              ROUND(AVG(r.rating), 1) AS avg_rating,
+              ROUND(AVG(r.rating)::numeric,1) AS avg_rating,
               COUNT(DISTINCT r.id) AS review_count,
-              GROUP_CONCAT(DISTINCT pa.amenity_id) AS amenity_ids
+              STRING_AGG(pa.amenity_id::text, ',') AS amenity_ids
        FROM nivaas_properties p
        LEFT JOIN nivaas_users u ON u.id = p.owner_id
        LEFT JOIN nivaas_reviews r ON r.property_id = p.id
@@ -476,7 +475,7 @@ router.get("/continue", requireAuth, async (req, res) => {
          sp.saved_at AS interaction_date,
          'saved_not_visited' AS interaction_type,
          'You saved this but haven''t visited yet' AS reason_label,
-         ROUND(AVG(r.rating), 1) AS avg_rating,
+         ROUND(AVG(r.rating)::numeric,1) AS avg_rating,
          COUNT(DISTINCT r.id) AS review_count
        FROM nivaas_saved_properties sp
        JOIN nivaas_properties p ON p.id = sp.property_id
@@ -504,7 +503,7 @@ router.get("/continue", requireAuth, async (req, res) => {
          i.created_at AS interaction_date,
          'inquired_not_visited' AS interaction_type,
          'You inquired about this property' AS reason_label,
-         ROUND(AVG(r.rating), 1) AS avg_rating,
+         ROUND(AVG(r.rating)::numeric,1) AS avg_rating,
          COUNT(DISTINCT r.id) AS review_count
        FROM nivaas_inquiries i
        JOIN nivaas_properties p ON p.id = i.property_id
@@ -530,10 +529,10 @@ router.get("/continue", requireAuth, async (req, res) => {
       `SELECT
          p.*,
          u.full_name AS owner_name, u.phone AS owner_phone,
-         CAST(v.visit_date AS CHAR) AS interaction_date,
+         v.visit_date::text AS interaction_date,
          'visited_not_rented' AS interaction_type,
          'You visited this property' AS reason_label,
-         ROUND(AVG(r.rating), 1) AS avg_rating,
+         ROUND(AVG(r.rating)::numeric,1) AS avg_rating,
          COUNT(DISTINCT r.id) AS review_count
        FROM nivaas_property_visits v
        JOIN nivaas_properties p ON p.id = v.property_id
@@ -593,7 +592,7 @@ router.get("/similar/:propertyId", async (req, res) => {
     // Fetch seed property
     const [seedRows] = await pool.query(
       `SELECT p.*,
-              GROUP_CONCAT(DISTINCT pa.amenity_id) AS amenity_ids
+              STRING_AGG(pa.amenity_id::text, ',') AS amenity_ids
        FROM nivaas_properties p
        LEFT JOIN nivaas_property_amenities pa ON pa.property_id = p.id
        WHERE p.id = ?
@@ -614,9 +613,9 @@ router.get("/similar/:propertyId", async (req, res) => {
     const [candidates] = await pool.query(
       `SELECT p.*,
               u.full_name AS owner_name, u.phone AS owner_phone,
-              ROUND(AVG(r.rating), 1) AS avg_rating,
+              ROUND(AVG(r.rating)::numeric,1) AS avg_rating,
               COUNT(DISTINCT r.id) AS review_count,
-              GROUP_CONCAT(DISTINCT pa.amenity_id) AS amenity_ids
+              STRING_AGG(pa.amenity_id::text, ',') AS amenity_ids
        FROM nivaas_properties p
        LEFT JOIN nivaas_users u ON u.id = p.owner_id
        LEFT JOIN nivaas_reviews r ON r.property_id = p.id

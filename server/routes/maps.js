@@ -815,214 +815,60 @@ function nominatimGet(path) {
   });
 }
 
-// ─── Photon helper (komoot.io) ────────────────────────────────────────────────
-// Photon is a free, key-less geocoder built on OSM data, specifically designed
-// for "search-as-you-type" autocomplete — it does prefix/partial-word matching
-// (e.g. "moch" while the user is still typing "mocha"). Nominatim, by contrast,
-// expects whole words and often returns nothing for an in-progress word, which
-// is why it alone isn't a good fit for a live search box.
-// Light throttle for the public Photon instance — same courtesy as Nominatim,
-// just a looser limit since Photon is built for higher-frequency typing traffic.
-let _photonLastCall = 0;
-function photonThrottle() {
-  const now = Date.now();
-  const gap  = 150; // ~6-7 req/s ceiling
-  const wait = Math.max(0, gap - (now - _photonLastCall));
-  _photonLastCall = now + wait;
-  return new Promise(r => setTimeout(r, wait));
-}
-
-function photonGet(path) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL("https://photon.komoot.io" + path);
-    const req = https.request(
-      {
-        hostname: parsed.hostname,
-        path:     parsed.pathname + parsed.search,
-        method:   "GET",
-        headers: {
-          "Accept":     "application/json",
-          "User-Agent": "Nivaas/1.0 (nivaas.in; contact@nivaas.in)",
-          "Connection": "close",
-        },
-      },
-      (resp) => {
-        let raw = "";
-        resp.on("data", c => { raw += c; });
-        resp.on("end", () => {
-          if (resp.statusCode && resp.statusCode >= 400) {
-            return reject(new Error(`Photon HTTP ${resp.statusCode}`));
-          }
-          try { resolve(JSON.parse(raw)); }
-          catch { reject(new Error("Invalid JSON from Photon")); }
-        });
-      }
-    );
-    req.on("error", reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error("Photon request timed out")); });
-    req.end();
-  });
-}
-
-// Photon's osm_type is a single letter (N/W/R) — normalize to Nominatim's
-// full word so place_id stays in the same "osm:<type>:<id>" shape used
-// everywhere else (and resolved the same way by /place-details below).
-const PHOTON_TYPE_MAP = { N: "node", W: "way", R: "relation" };
-
-function photonFeatureToPrediction(f) {
-  const p = f?.properties || {};
-  if (!p.osm_id || !p.osm_type) return null;
-  const osmType = PHOTON_TYPE_MAP[p.osm_type] || "way";
-
-  const mainText = p.name || p.street || p.city || p.state || "Unnamed place";
-  const secondaryParts = [];
-  if (p.name && p.street) secondaryParts.push(p.housenumber ? `${p.street} ${p.housenumber}` : p.street);
-  if (p.district && p.district !== mainText) secondaryParts.push(p.district);
-  if (p.city && p.city !== mainText) secondaryParts.push(p.city);
-  if (p.state) secondaryParts.push(p.state);
-  if (p.postcode) secondaryParts.push(p.postcode);
-  if (p.country) secondaryParts.push(p.country);
-  const secondaryText = secondaryParts.filter(Boolean).join(", ");
-  const description = [mainText, secondaryText].filter(Boolean).join(", ");
-
-  const coords = f?.geometry?.coordinates; // [lon, lat]
-  return {
-    place_id:              `osm:${osmType}:${p.osm_id}`,
-    description,
-    structured_formatting: { main_text: mainText, secondary_text: secondaryText },
-    types:                 [p.osm_value || p.osm_key || "place"],
-    _lat: Array.isArray(coords) ? String(coords[1]) : undefined,
-    _lng: Array.isArray(coords) ? String(coords[0]) : undefined,
-  };
-}
-
+// Parse a Nominatim result into our standard PlaceDetails shape
 function nominatimToDetails(r) {
-  const addr = r?.address || {};
-  const city = addr.city || addr.town || addr.village || addr.municipality || addr.county || "";
-  const locality = addr.suburb || addr.neighbourhood || addr.residential || addr.subdistrict || addr.quarter || "";
-  const pincode = addr.postcode || "";
-  const state = addr.state || "";
-  const country = addr.country || "India";
+  const addr  = r.address || {};
+  const city  = addr.city || addr.town || addr.village || addr.county || addr.state_district || "";
+  const locality = addr.suburb || addr.neighbourhood || addr.quarter || addr.hamlet || "";
+  const pincode  = addr.postcode || "";
+  const state    = addr.state || "";
+  const country  = addr.country || "";
+
+  // Build a clean formatted_address from display_name
+  const formatted_address = r.display_name || "";
+
   return {
-    place_id: r?.osm_type && r?.osm_id ? `osm:${r.osm_type}:${r.osm_id}` : (r?.place_id ? String(r.place_id) : "osm"),
-    formatted_address: r?.display_name || "",
-    lat: parseFloat(r?.lat),
-    lng: parseFloat(r?.lon),
-    city,
-    locality,
-    pincode,
-    state,
-    country,
+    place_id:          `osm:${r.osm_type}:${r.osm_id}`,
+    formatted_address,
+    lat:               parseFloat(r.lat),
+    lng:               parseFloat(r.lon),
+    city, locality, pincode, state, country,
   };
 }
 
 // ─── GET /api/maps/places-autocomplete ───────────────────────────────────────
 // Search-as-you-type address autocomplete.
 // Priority order:
-//   1. Photon      — free, no key, purpose-built for partial-word/live typing
-//   2. Nominatim   — free, no key, good fallback for complete-word queries
-//   3. Google APIs — if a key is present and has the relevant API enabled
+//   1. Nominatim /search  — free, no key, works everywhere
+//   2. Places API (New)   — if Google key is present and has the API enabled
+//   3. Legacy Places API  — last resort Google fallback
 //
 // Query params:
 //   input        – required, the search text (min 2 chars)
 //   sessiontoken – optional, billing session grouping (Google paths only)
-//   city         – optional, the city already chosen in the form (e.g. "Ahmedabad").
-//                  Appended to the search text (when not already present) and used
-//                  to bias ranking, so "Krishna Complex" doesn't match a place of
-//                  the same name in a different state.
-//   lat / lng    – optional, bias centre coordinates (usually the chosen city's
-//                  centre). Used to softly prefer nearby results.
 //
 // Response: { status, predictions: [{ place_id, description, structured_formatting }] }
 router.get("/places-autocomplete", async (req, res) => {
-  const { input, city, lat, lng } = req.query;
+  const { input } = req.query;
   if (!input || typeof input !== "string" || input.trim().length < 2) {
     return res.status(400).json({ error: "input is required (min 2 characters)" });
   }
 
-  const query    = input.trim();
-  const biasCity = typeof city === "string" ? city.trim() : "";
-  const biasLat  = parseFloat(lat);
-  const biasLng  = parseFloat(lng);
-  const hasBiasCoords = Number.isFinite(biasLat) && Number.isFinite(biasLng);
+  const query = input.trim();
 
-  // If the user's text doesn't already mention the city, append it. This is
-  // the single biggest fix for "wrong state" matches — a bare society/street
-  // name is otherwise ambiguous across the whole country.
-  const cityAlreadyMentioned = biasCity && query.toLowerCase().includes(biasCity.toLowerCase());
-  const queryWithCity = biasCity && !cityAlreadyMentioned ? `${query}, ${biasCity}` : query;
-
-  // A soft ~65km bounding box around the bias point. bounded=0 means it only
-  // nudges ranking toward that area rather than hiding everything outside it,
-  // so a genuine landmark elsewhere can still be found if typed in full.
-  function applyBias(params) {
-    if (hasBiasCoords) {
-      const box = 0.6; // degrees, ≈ 65km half-width
-      params.set("viewbox", `${biasLng - box},${biasLat + box},${biasLng + box},${biasLat - box}`);
-      params.set("bounded", "0");
-    }
-    return params;
-  }
-
-  // ── Path 1a: Photon (primary — purpose-built for live/partial-word typing) ──
-  // Deliberately does NOT append the city to the query text here: Photon treats
-  // the *last* word of the query as the in-progress partial word to prefix-match
-  // (that's what makes "moch" find "Mocha ..."). Appending ", Ahmedabad" after
-  // it would make "moch" a separate, already-"finished" word that has to match
-  // exactly — which breaks the very thing we want. Geographic bias is instead
-  // done properly via lat/lon + location_bias_scale below.
-  try {
-    await photonThrottle();
-    const photonParams = new URLSearchParams({ q: query, limit: "8", lang: "en" });
-    if (hasBiasCoords) {
-      photonParams.set("lat", String(biasLat));
-      photonParams.set("lon", String(biasLng));
-      photonParams.set("location_bias_scale", "0.8"); // soft pull toward the city
-    }
-
-    const photonBody = await photonGet(`/api/?${photonParams.toString()}`);
-    const photonPredictions = (photonBody?.features || [])
-      .map(photonFeatureToPrediction)
-      .filter(Boolean);
-
-    if (photonPredictions.length > 0) {
-      res.setHeader("Cache-Control", "no-store");
-      return res.json({ status: "OK", predictions: photonPredictions, source: "photon" });
-    }
-    console.info("[places-autocomplete] Photon returned 0 results, trying Nominatim");
-  } catch (photonErr) {
-    console.warn("[places-autocomplete] Photon failed:", photonErr.message, "– trying Nominatim");
-  }
-
-  // ── Path 1b: Nominatim (fallback — reliable for complete-word queries) ────
+  // ── Path 1: Nominatim (primary — no API key needed) ───────────────────────
   try {
     await nominatimThrottle();
-    const params = applyBias(new URLSearchParams({
-      q:              queryWithCity,
+    const params = new URLSearchParams({
+      q:              query,
       format:         "jsonv2",
       addressdetails: "1",
       limit:          "8",
       countrycodes:   "in",
       "accept-language": "en",
-    }));
+    });
 
-    let results = await nominatimGet(`/search?${params.toString()}`);
-
-    // If biasing the query text with the city produced nothing (e.g. a typo
-    // in the city, or a genuinely out-of-city landmark), retry with the
-    // user's original text — still soft-biased by viewbox if we have coords.
-    if ((!Array.isArray(results) || results.length === 0) && queryWithCity !== query) {
-      await nominatimThrottle();
-      const fallbackParams = applyBias(new URLSearchParams({
-        q:              query,
-        format:         "jsonv2",
-        addressdetails: "1",
-        limit:          "8",
-        countrycodes:   "in",
-        "accept-language": "en",
-      }));
-      results = await nominatimGet(`/search?${fallbackParams.toString()}`);
-    }
+    const results = await nominatimGet(`/search?${params.toString()}`);
 
     if (Array.isArray(results) && results.length > 0) {
       const predictions = results.map(r => {
@@ -1045,7 +891,7 @@ router.get("/places-autocomplete", async (req, res) => {
       return res.json({ status: "OK", predictions, source: "nominatim" });
     }
 
-    // Nominatim also returned empty — fall through to Google
+    // Nominatim returned empty — fall through to Google
     console.info("[places-autocomplete] Nominatim returned 0 results, trying Google");
   } catch (nomErr) {
     console.warn("[places-autocomplete] Nominatim failed:", nomErr.message, "– trying Google");
@@ -1062,17 +908,12 @@ router.get("/places-autocomplete", async (req, res) => {
   // Places API (New)
   try {
     const reqBody = {
-      input:                   queryWithCity,
+      input:                   query,
       languageCode:            "en",
       includedRegionCodes:     ["IN"],
       includeQueryPredictions: false,
     };
     if (sessiontoken) reqBody.sessionToken = String(sessiontoken);
-    if (hasBiasCoords) {
-      reqBody.locationBias = {
-        circle: { center: { latitude: biasLat, longitude: biasLng }, radius: 60000 },
-      };
-    }
 
     const body = await placesNewPost(
       "/v1/places:autocomplete",
@@ -1109,12 +950,8 @@ router.get("/places-autocomplete", async (req, res) => {
 
   // Legacy Places Autocomplete API
   try {
-    const params = new URLSearchParams({ input: queryWithCity, key: GOOGLE_KEY, language: "en", components: "country:in" });
+    const params = new URLSearchParams({ input: query, key: GOOGLE_KEY, language: "en", components: "country:in" });
     if (sessiontoken) params.set("sessiontoken", String(sessiontoken));
-    if (hasBiasCoords) {
-      params.set("location", `${biasLat},${biasLng}`);
-      params.set("radius", "60000");
-    }
 
     const body = await googleJsonGet(`https://maps.googleapis.com/maps/api/place/autocomplete/json?${params.toString()}`);
 

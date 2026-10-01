@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { CustomDatePicker } from "@/components/ui/custom-date-picker";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { properties as propertiesApi, uploadImages, aiApi, tourApi, type ApiPropertyImage, API_BASE } from "@/lib/api";
 import { AI360Generator, type TourFormState } from "@/components/property/AI360Generator";
@@ -23,7 +22,6 @@ import {
   Loader2, ChevronLeft, ChevronRight, ChevronDown, Check,
   ImagePlus, X, Star, Upload, AlertCircle, MapPin, Navigation, ExternalLink, Sparkles, Plus,
   Bed, Bath, Home, Armchair, Building2, Pencil, Briefcase, Compass, Flame, Sun, Phone,
-  Calendar, ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import "leaflet/dist/leaflet.css";
@@ -217,7 +215,7 @@ function generateDynamicTitleOptions(form: FormState): Array<{ tag: string; icon
   const primaryLoc = loc || cty;
   const area = form.area_sqft.trim() ? `${form.area_sqft.trim()} Sq Ft` : "";
   const furn = form.furnished.trim() ? toSmartTitleCase(form.furnished.trim()) : "";
-  const listType = form.listing_type === "sale" ? "For Sale" : form.listing_type === "pg" ? "For PG" : form.listing_type === "short_term" ? "For Short-Term Stay" : "For Rent";
+  const listType = form.listing_type === "sale" ? "For Sale" : form.listing_type === "pg" ? "For PG" : "For Rent";
   const propType = toSmartTitleCase(form.property_type || "Apartment");
 
   if (isOffice) {
@@ -295,11 +293,6 @@ interface FormState {
   amenities: string[]; city: string; locality: string; address: string;
   house_number: string; building_name: string; wing: string; landmark: string; pincode: string;
   price: string; deposit: string;
-  /** Short-term date window (ISO YYYY-MM-DD) */
-  short_term_from: string;
-  short_term_to: string;
-  /** Weekly price for short-term stays */
-  short_term_price: string;
   latitude: string; longitude: string;
   map_url: string;
   google_place_id: string;
@@ -316,7 +309,6 @@ const INITIAL: FormState = {
   amenities: [], city: "Ahmedabad", locality: "", address: "",
   house_number: "", building_name: "", wing: "", landmark: "", pincode: "",
   price: "", deposit: "",
-  short_term_from: "", short_term_to: "", short_term_price: "",
   latitude: "", longitude: "", map_url: "",
   google_place_id: "", location_locked: false,
   entrance_direction: "North-East",
@@ -376,7 +368,7 @@ interface PreviewImage {
 const MIN_IMAGES = 1;
 const MAX_IMAGES = 10;
 
-import { cityCoords, isCoordsPlausibleForCity } from "@/lib/mock-properties";
+import { cityCoords } from "@/lib/mock-properties";
 
 // ─── GooglePlacesSearch — Location Autocomplete ──────────────────────────────
 // Architecture (2-layer fallback, all with AbortController timeouts):
@@ -403,11 +395,9 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   }
 }
 
-// Load the Google Maps JS API — kept for potential future use.
-// Currently not loaded on page mount; only the server-side proxy is used for
-// autocomplete and place details.
+// Load the Google Maps JS API once (returns a promise that resolves when ready)
 let gmapsLoadPromise: Promise<void> | null = null;
-function loadGoogleMapsApiIfNeeded(): Promise<void> {
+function loadGoogleMapsApi(): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   const g = window as unknown as { google?: { maps?: { places?: unknown } } };
   if (g.google?.maps?.places) return Promise.resolve();
@@ -419,143 +409,13 @@ function loadGoogleMapsApiIfNeeded(): Promise<void> {
     script.async = true;
     script.defer = true;
     script.onload = () => resolve();
-    script.onerror = () => { gmapsLoadPromise = null; reject(new Error("Failed to load Google Maps API")); };
+    script.onerror = () => {
+      gmapsLoadPromise = null; // allow retry
+      reject(new Error("Failed to load Google Maps API"));
+    };
     document.head.appendChild(script);
   });
   return gmapsLoadPromise;
-}
-// Suppress unused warning — function available for future use
-void loadGoogleMapsApiIfNeeded;
-
-// ─── DraggableLeafletMap — Leaflet-based draggable marker for owner location ──
-// Uses the same Leaflet + Google Maps tiles setup as the rest of the app.
-// No Google Maps JS SDK billing required — tiles are fetched directly.
-// Owner can drag the red pin to fine-tune the exact property location.
-let _ownerLeafletPromise: Promise<unknown> | null = null;
-function loadOwnerLeaflet() {
-  if (_ownerLeafletPromise) return _ownerLeafletPromise;
-  _ownerLeafletPromise = (async () => {
-    await import("leaflet/dist/leaflet.css");
-    const mod = await import("leaflet");
-    const L = mod.default ?? mod;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    delete (L.Icon.Default.prototype as any)._getIconUrl;
-    return L;
-  })();
-  return _ownerLeafletPromise;
-}
-
-function DraggableLeafletMap({
-  lat,
-  lng,
-  onPinMoved,
-}: {
-  lat: number;
-  lng: number;
-  onPinMoved: (newLat: number, newLng: number) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mapRef       = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const markerRef    = useRef<any>(null);
-  const [ready, setReady] = useState(false);
-  const onPinMovedRef = useRef(onPinMoved);
-  useEffect(() => { onPinMovedRef.current = onPinMoved; }, [onPinMoved]);
-
-  // Initial map + marker creation
-  useEffect(() => {
-    let destroyed = false;
-    loadOwnerLeaflet().then((L: unknown) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const Leaflet = L as any;
-      if (destroyed || !containerRef.current || mapRef.current) return;
-
-      const map = Leaflet.map(containerRef.current, {
-        center:           [lat, lng],
-        zoom:             17,
-        zoomControl:      true,
-        attributionControl: false,
-        scrollWheelZoom:  false,
-      });
-
-      // Google Maps road tiles — same as the rest of the app
-      Leaflet.tileLayer(
-        "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        { subdomains: "0123", maxZoom: 20 }
-      ).addTo(map);
-
-      // Red draggable pin using a custom DivIcon (no external image needed)
-      const icon = Leaflet.divIcon({
-        html: `<div style="
-          width:28px;height:40px;position:relative;cursor:grab;
-          filter:drop-shadow(0 4px 8px rgba(220,38,38,0.5));
-        ">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 40" width="28" height="40">
-            <path d="M14 0C6.268 0 0 6.268 0 14c0 9.333 14 26 14 26S28 23.333 28 14C28 6.268 21.732 0 14 0z"
-              fill="#dc2626" stroke="#fff" stroke-width="1.5"/>
-            <circle cx="14" cy="13" r="6" fill="#fff"/>
-            <circle cx="14" cy="13" r="3" fill="#dc2626"/>
-          </svg>
-        </div>`,
-        className:  "",
-        iconSize:   [28, 40],
-        iconAnchor: [14, 40],
-      });
-
-      const marker = Leaflet.marker([lat, lng], { icon, draggable: true }).addTo(map);
-
-      marker.on("dragend", (e: { target: { getLatLng(): { lat: number; lng: number } } }) => {
-        const { lat: newLat, lng: newLng } = e.target.getLatLng();
-        onPinMovedRef.current(newLat, newLng);
-      });
-
-      mapRef.current    = map;
-      markerRef.current = marker;
-      if (!destroyed) setReady(true);
-    }).catch(() => {/* map load failure — silent */});
-
-    return () => {
-      destroyed = true;
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current    = null;
-        markerRef.current = null;
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Re-centre map + move marker when parent lat/lng change (new place selected)
-  useEffect(() => {
-    if (!mapRef.current || !markerRef.current) return;
-    const pos = [lat, lng] as [number, number];
-    mapRef.current.setView(pos, 17, { animate: true });
-    markerRef.current.setLatLng(pos);
-  }, [lat, lng]);
-
-  return (
-    <div className="mt-2 rounded-xl overflow-hidden border border-[#e8d9c0] shadow-sm relative" style={{ height: 220 }}>
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-      {!ready && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#f5ede0] z-10">
-          <Loader2 className="h-5 w-5 animate-spin" style={{ color: "#C9921A" }} />
-        </div>
-      )}
-      {ready && (
-        <div
-          className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none"
-          style={{
-            background: "rgba(26,18,9,0.72)", color: "#fff",
-            fontSize: 10, fontWeight: 700, borderRadius: 999,
-            padding: "3px 10px", whiteSpace: "nowrap",
-          }}
-        >
-          Drag the pin to fine-tune exact location
-        </div>
-      )}
-    </div>
-  );
 }
 
 interface PlaceSuggestion {
@@ -584,17 +444,12 @@ function GooglePlacesSearch({
   value,
   lat,
   lng,
-  cityHint,
   onLocationSelected,
   onClear,
 }: {
   value: string;
   lat: string;
   lng: string;
-  /** City already chosen higher up in the form (e.g. "Ahmedabad") — used to bias
-   *  search results so a name like "Krishna Complex" doesn't match a place with
-   *  the same name in a completely different city/state. */
-  cityHint?: string;
   onLocationSelected: (details: PlaceDetails) => void;
   onClear: () => void;
 }) {
@@ -609,6 +464,9 @@ function GooglePlacesSearch({
   const inputRef                        = useRef<HTMLInputElement>(null);
   const debounceRef                     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionTokenRef                 = useRef<string>(crypto.randomUUID());
+  const acServiceRef                    = useRef<google.maps.places.AutocompleteService | null>(null);
+  const placesServiceRef                = useRef<google.maps.places.PlacesService | null>(null);
+  const dummyMapRef                     = useRef<HTMLDivElement>(null);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -621,23 +479,17 @@ function GooglePlacesSearch({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // ── Autocomplete: server-side proxy only ──────────────────────────────────
-  // The proxy calls Photon → Nominatim → Google Places API server-side.
-  // The Google Maps JS SDK is NOT used for suggestions — it requires Maps JS API
-  // billing which is separate from Places API billing.
+  // Pre-load Google Maps API in background so JS-API fallback is instant
+  useEffect(() => {
+    if (GMAPS_KEY) loadGoogleMapsApi().catch(() => {});
+  }, []);
+
+  // ── Path 1: Server-side proxy (Nominatim primary, Google fallback) ──────────
   const fetchViaProxy = async (input: string): Promise<PlaceSuggestion[]> => {
     const params = new URLSearchParams({
       input:        input.trim(),
       sessiontoken: sessionTokenRef.current,
     });
-    if (cityHint) {
-      params.set("city", cityHint);
-      const centre = cityCoords[cityHint];
-      if (centre) {
-        params.set("lat", String(centre.lat));
-        params.set("lng", String(centre.lng));
-      }
-    }
     const res = await fetchWithTimeout(
       `${API_BASE}/maps/places-autocomplete?${params.toString()}`,
       {},
@@ -645,20 +497,20 @@ function GooglePlacesSearch({
     );
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      throw new Error((errBody as { message?: string; error?: string }).message || (errBody as { error?: string }).error || `Server error ${res.status}`);
+      throw new Error(errBody.message || errBody.error || `Server error ${res.status}`);
     }
     const data = await res.json();
     if (!data.predictions || !Array.isArray(data.predictions)) {
       throw new Error("Unexpected response from server");
     }
     if (data.status === "ZERO_RESULTS") return [];
-    return (data.predictions as Array<{
+    return data.predictions.map((p: {
       place_id: string;
       description: string;
       structured_formatting?: { main_text?: string; secondary_text?: string };
       _lat?: string;
       _lng?: string;
-    }>).map(p => ({
+    }) => ({
       place_id:       p.place_id,
       description:    p.description,
       main_text:      p.structured_formatting?.main_text    || p.description.split(",")[0],
@@ -666,6 +518,41 @@ function GooglePlacesSearch({
       _lat:           p._lat,
       _lng:           p._lng,
     }));
+  };
+
+  // ── Path 2: Google Maps JS API (browser-side, has referrer) ──────────────
+  const fetchViaJsApi = async (input: string): Promise<PlaceSuggestion[]> => {
+    if (!GMAPS_KEY) throw new Error("No API key for JS fallback");
+    await Promise.race([
+      loadGoogleMapsApi(),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("JS API load timeout")), 8_000)),
+    ]);
+    if (!acServiceRef.current) {
+      acServiceRef.current = new google.maps.places.AutocompleteService();
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("AutocompleteService timeout")), 8_000);
+      acServiceRef.current!.getPlacePredictions(
+        { input: input.trim(), componentRestrictions: { country: "in" } },
+        (predictions, status) => {
+          clearTimeout(timer);
+          if (status === google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+            resolve([]);
+            return;
+          }
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !predictions) {
+            reject(new Error(`AutocompleteService status: ${status}`));
+            return;
+          }
+          resolve(predictions.map(p => ({
+            place_id:       p.place_id,
+            description:    p.description,
+            main_text:      p.structured_formatting.main_text,
+            secondary_text: p.structured_formatting.secondary_text || "",
+          })));
+        }
+      );
+    });
   };
 
   const fetchSuggestions = async (input: string) => {
@@ -679,12 +566,23 @@ function GooglePlacesSearch({
     let items: PlaceSuggestion[] = [];
     let lastError = "";
 
+    // ── Try proxy first (Nominatim → Google fallback on server) ───────────
     try {
       items = await fetchViaProxy(input);
     } catch (proxyErr: unknown) {
       const msg = proxyErr instanceof Error ? proxyErr.message : String(proxyErr);
-      console.error("[GooglePlacesSearch] proxy failed:", msg);
+      console.warn("[GooglePlacesSearch] proxy failed:", msg, "→ trying JS API");
       lastError = msg;
+
+      // ── Fallback: Google Maps JS API (browser-side) ─────────────────────
+      try {
+        items = await fetchViaJsApi(input);
+        lastError = "";
+      } catch (jsErr: unknown) {
+        const jsmsg = jsErr instanceof Error ? jsErr.message : String(jsErr);
+        console.error("[GooglePlacesSearch] JS API also failed:", jsmsg);
+        lastError = jsmsg;
+      }
     }
 
     if (items.length > 0) {
@@ -692,6 +590,7 @@ function GooglePlacesSearch({
       setOpen(true);
       setSearchError(null);
     } else if (lastError) {
+      // Only show "timed out" when both proxy AND JS API threw — not for ZERO_RESULTS
       const isTimeout = lastError.toLowerCase().includes("timeout") || lastError.includes("abort");
       setSearchError(
         isTimeout
@@ -701,43 +600,85 @@ function GooglePlacesSearch({
       setSuggestions([]);
       setOpen(false);
     } else {
+      // ZERO_RESULTS from all paths — friendly empty state
       setSuggestions([]);
       setOpen(false);
-      setSearchError(
-        `No results for "${input.trim()}". Try searching the society, building or area name instead.`
-      );
+      setSearchError(`No results found for "${input.trim()}". Try a different search.`);
     }
 
     setLoading(false);
   };
 
-  // ── Place details: server proxy only ─────────────────────────────────────
-  // The server calls Places API (New) or Nominatim lookup depending on place_id type.
-  // We do NOT fall back to the browser-side PlacesService — that requires Maps JS API
-  // billing which is separate from Places API billing.
+  // ── Place details: proxy first, JS API fallback ────────────────────────────
   const fetchPlaceDetails = async (placeId: string, hint?: { lat?: string; lng?: string }): Promise<PlaceDetails> => {
-    const params = new URLSearchParams({
-      place_id:     placeId,
-      sessiontoken: sessionTokenRef.current,
+    // Try server proxy first
+    try {
+      const params = new URLSearchParams({
+        place_id:     placeId,
+        sessiontoken: sessionTokenRef.current,
+      });
+      // For Nominatim osm:* ids, pass the embedded coords so the server can
+      // skip a second lookup round-trip
+      if (hint?.lat && hint?.lng) {
+        params.set("lat", hint.lat);
+        params.set("lng", hint.lng);
+      }
+      const res = await fetchWithTimeout(
+        `${API_BASE}/maps/place-details?${params.toString()}`,
+        {},
+        10_000
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.lat && data.lng) return data as PlaceDetails;
+      }
+    } catch (e) {
+      console.warn("[GooglePlacesSearch] place-details proxy failed:", e);
+    }
+
+    // Fallback: Google Maps JS API PlacesService
+    if (!GMAPS_KEY) throw new Error("Cannot get place details — API key missing");
+    await Promise.race([
+      loadGoogleMapsApi(),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("JS API load timeout")), 8_000)),
+    ]);
+    if (!placesServiceRef.current && dummyMapRef.current) {
+      placesServiceRef.current = new google.maps.places.PlacesService(dummyMapRef.current);
+    }
+    if (!placesServiceRef.current) throw new Error("PlacesService unavailable");
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("PlacesService.getDetails timeout")), 8_000);
+      placesServiceRef.current!.getDetails(
+        { placeId, fields: ["place_id", "formatted_address", "address_components", "geometry"] },
+        (result, status) => {
+          clearTimeout(timer);
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
+            reject(new Error(`PlacesService status: ${status}`));
+            return;
+          }
+          const comps = result.address_components || [];
+          const getComp = (...types: string[]) => {
+            for (const type of types) {
+              const found = comps.find(c => c.types.includes(type));
+              if (found) return found.long_name;
+            }
+            return "";
+          };
+          resolve({
+            place_id:          result.place_id || placeId,
+            formatted_address: result.formatted_address || "",
+            lat:               result.geometry?.location?.lat() ?? 0,
+            lng:               result.geometry?.location?.lng() ?? 0,
+            city:    getComp("locality", "administrative_area_level_3", "administrative_area_level_2"),
+            locality:getComp("sublocality_level_1", "sublocality", "neighborhood"),
+            pincode: getComp("postal_code"),
+            state:   getComp("administrative_area_level_1"),
+            country: getComp("country"),
+          });
+        }
+      );
     });
-    if (hint?.lat && hint?.lng) {
-      params.set("lat", hint.lat);
-      params.set("lng", hint.lng);
-    }
-    const res = await fetchWithTimeout(
-      `${API_BASE}/maps/place-details?${params.toString()}`,
-      {},
-      12_000
-    );
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({})) as { error?: string; message?: string };
-      throw new Error(errBody.message || errBody.error || `Place details failed (HTTP ${res.status})`);
-    }
-    const data = await res.json() as PlaceDetails;
-    if (!data.lat || !data.lng) {
-      throw new Error("Could not get coordinates for this location");
-    }
-    return data;
   };
 
   // ── Use Current Location (GPS → reverse-geocode) ──────────────────────────
@@ -842,6 +783,9 @@ function GooglePlacesSearch({
 
   return (
     <div ref={containerRef} className="relative">
+      {/* Hidden div needed by PlacesService as attribution container */}
+      <div ref={dummyMapRef} style={{ display: "none" }} />
+
       {/* Search input row */}
       <div className="flex gap-2 items-stretch">
         <div className="relative flex-1">
@@ -1244,121 +1188,25 @@ function NewProperty() {
   const onDragLeave = () => setIsDragging(false);
 
   const validateStep = (s: number): boolean => {
-    if (s === 1) {
-      if (!form.property_type) {
-        toast.error("(Property Type) this field is req.");
-        return false;
-      }
-      if (!form.listing_type) {
-        toast.error("(Listing Type) this field is req.");
-        return false;
-      }
-      if (form.listing_type === "short_term") {
-        if (!form.short_term_from) {
-          toast.error("(Check-in Date) this field is req.");
-          return false;
-        }
-        if (!form.short_term_to) {
-          toast.error("(Check-out Date) this field is req.");
-          return false;
-        }
-        const diff = (new Date(form.short_term_to).getTime() - new Date(form.short_term_from).getTime()) / 86_400_000;
-        if (diff < 7) {
-          toast.error("(Stay Duration) Minimum stay duration for Short-Term Property is 1 week (7 days).");
-          return false;
-        }
-        if (diff > 183) {
-          toast.error("(Stay Duration) Maximum stay duration for Short-Term Property is 6 months (183 days).");
-          return false;
-        }
-        if (!form.short_term_price || Number(form.short_term_price) <= 0) {
-          toast.error("(Short-Term Price) this field is req.");
-          return false;
-        }
-      } else if (form.short_term_from || form.short_term_to) {
-        if (form.short_term_from && !form.short_term_to) {
-          toast.error("(Check-out Date) this field is req.");
-          return false;
-        }
-        if (!form.short_term_from && form.short_term_to) {
-          toast.error("(Check-in Date) this field is req.");
-          return false;
-        }
-        const diff = (new Date(form.short_term_to).getTime() - new Date(form.short_term_from).getTime()) / 86_400_000;
-        if (diff < 7) {
-          toast.error("(Stay Duration) Minimum stay duration is 1 week (7 days).");
-          return false;
-        }
-        if (diff > 183) {
-          toast.error("(Stay Duration) Maximum stay duration is 6 months (183 days).");
-          return false;
-        }
-      }
-    }
     if (s === 2) {
-      if (!form.city.trim()) {
-        toast.error("(City) this field is req.");
-        return false;
-      }
-      if (!form.locality.trim()) {
-        toast.error("(Locality / Area) this field is req.");
-        return false;
-      }
-      if (!form.building_name.trim()) {
-        toast.error("(Society / Building Name) this field is req.");
-        return false;
-      }
-      if (!form.address.trim()) {
-        toast.error("(Full Address) this field is req.");
-        return false;
-      }
+      if (!form.locality.trim()) { toast.error("Please Enter Locality"); return false; }
+      if (!form.address.trim()) { toast.error("Please Enter Full Address (Mandatory)"); return false; }
       if (!form.latitude.trim() || !form.longitude.trim()) {
-        toast.error("(Google Maps Location) this field is req.");
+        toast.error("Please drop a pin on the map to set the exact location");
         return false;
       }
-      if (!form.title.trim()) {
-        toast.error("(Property Title) this field is req.");
-        return false;
-      }
+      if (!form.title.trim()) { toast.error("Please Select Or Enter A Property Title"); return false; }
       upd("locality", toSmartTitleCase(form.locality));
-      upd("building_name", toSmartTitleCase(form.building_name));
       upd("address", toSmartTitleCase(form.address));
       upd("title", toSmartTitleCase(form.title));
     }
     if (s === 3) {
       if (images.length < MIN_IMAGES) {
-        toast.error("(Property Photos) this field is req.");
+        toast.error(`Please Upload At Least ${MIN_IMAGES} Property Photo To Proceed.`);
         return false;
       }
     }
     // Step 4 (3D View) is optional — always passes
-    // Step 5 (Vastu) is optional — always passes
-    if (s === 6) {
-      if (form.listing_type === "short_term") {
-        if (!form.short_term_price || Number(form.short_term_price) <= 0) {
-          toast.error("(Short-Term Price) this field is req.");
-          return false;
-        }
-        if (!form.short_term_from) {
-          toast.error("(Check-in Date) this field is req.");
-          return false;
-        }
-        if (!form.short_term_to) {
-          toast.error("(Check-out Date) this field is req.");
-          return false;
-        }
-      } else {
-        if (!form.price || Number(form.price) <= 0) {
-          const priceLabel = form.listing_type === "sale" ? "Sale Price" : "Monthly Rent";
-          toast.error(`(${priceLabel}) this field is req.`);
-          return false;
-        }
-        if (form.listing_type !== "sale" && (!form.deposit || Number(form.deposit) <= 0)) {
-          toast.error("(Security Deposit) this field is req.");
-          return false;
-        }
-      }
-    }
     return true;
   };
 
@@ -1367,12 +1215,12 @@ function NewProperty() {
 
   // ── Submit ────────────────────────────────────────────────────────────────
   const submit = async () => {
-    // Validate each step in sequence so that if any step was missed, we navigate the user there and show toast
-    for (let stepIndex = 1; stepIndex <= 6; stepIndex++) {
-      if (!validateStep(stepIndex)) {
-        setStep(stepIndex);
-        return;
-      }
+    if (!form.price) { toast.error("Please Enter Price"); return; }
+    if (!form.address.trim()) { toast.error("Please Enter Full Address"); return; }
+    if (!form.latitude || !form.longitude) { toast.error("Please drop a pin on the map to set the exact location"); return; }
+    if (images.length < MIN_IMAGES) {
+      toast.error(`Please Upload At Least ${MIN_IMAGES} Property Photo Before Publishing.`);
+      return;
     }
     setLoading(true);
     try {
@@ -1380,7 +1228,7 @@ function NewProperty() {
         title:            toSmartTitleCase(form.title),
         description:      toSmartTitleCase(form.description) || undefined,
         property_type:    form.property_type,
-        listing_type:     form.listing_type as "rent" | "sale" | "pg" | "short_term",
+        listing_type:     form.listing_type as "rent" | "sale" | "pg",
         bedrooms:         form.bedrooms ? Number(form.bedrooms) : 0,
         bathrooms:        form.bathrooms ? Number(form.bathrooms) : 0,
         area_sqft:        form.area_sqft ? Number(form.area_sqft) : 0,
@@ -1391,11 +1239,8 @@ function NewProperty() {
         address:          toSmartTitleCase(form.address) || undefined,
         pincode:          form.pincode || undefined,
         map_url:          form.map_url   || undefined,
-        price:            form.listing_type === "short_term" ? 0 : Number(form.price),
+        price:            Number(form.price),
         deposit:          form.deposit ? Number(form.deposit) : null,
-        short_term_from:  form.short_term_from || undefined,
-        short_term_to:    form.short_term_to   || undefined,
-        short_term_price: form.short_term_price ? Number(form.short_term_price) : undefined,
         latitude:         form.latitude ? Number(form.latitude) : undefined,
         longitude:        form.longitude ? Number(form.longitude) : undefined,
         facing:           form.entrance_direction,
@@ -1512,20 +1357,12 @@ function NewProperty() {
       <div className="flex items-center gap-0 overflow-x-auto pb-1 scrollbar-none">
         {STEPS.map((s, i) => (
           <div key={s.id} className="flex items-center flex-1 last:flex-none shrink-0 sm:shrink">
-            <button type="button" onClick={() => {
-              if (s.id < step) {
-                setStep(s.id);
-              } else if (s.id > step) {
-                if (validateStep(step)) {
-                  setStep(s.id);
-                }
-              }
-            }}
+            <button type="button" onClick={() => step > s.id && setStep(s.id)}
               className={cn(
                 "flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full text-xs sm:text-sm font-semibold border-2 transition",
                 step === s.id  ? "border-primary bg-primary text-white"
                 : step > s.id  ? "border-primary bg-primary/10 text-primary cursor-pointer"
-                : "border-muted-foreground/30 bg-background text-muted-foreground cursor-pointer hover:border-primary/50",
+                : "border-muted-foreground/30 bg-background text-muted-foreground cursor-default",
               )}>
               {step > s.id ? <Check className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> : s.id}
             </button>
@@ -1567,284 +1404,10 @@ function NewProperty() {
               <SelectItem value="rent">Rent</SelectItem>
               <SelectItem value="sale">Sale</SelectItem>
               <SelectItem value="pg">PG</SelectItem>
-              <SelectItem value="short_term">Short-Term Property</SelectItem>
             </SelectContent>
           </Select>
         </div>
       </div>
-
-      {/* ── Short-Term Stay & Availability Window Section (Visible by default) ── */}
-      {(() => {
-        const isShortTerm = form.listing_type === "short_term";
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayStr = today.toISOString().slice(0, 10);
-
-        // Compute min/max for To date (1 week ≤ stay ≤ 6 months)
-        const fromDate = form.short_term_from ? new Date(form.short_term_from) : null;
-        const minTo = fromDate ? new Date(fromDate.getTime() + 7 * 86_400_000).toISOString().slice(0, 10) : todayStr;
-        const maxTo = fromDate ? new Date(fromDate.getTime() + 183 * 86_400_000).toISOString().slice(0, 10) : "";
-
-        // Formatted display dates
-        const formatHumanDate = (dateStr: string) => {
-          if (!dateStr) return "";
-          try {
-            const d = new Date(dateStr + "T00:00:00");
-            if (isNaN(d.getTime())) return dateStr;
-            return d.toLocaleDateString("en-IN", {
-              weekday: "short",
-              day: "numeric",
-              month: "short",
-              year: "numeric",
-            });
-          } catch {
-            return dateStr;
-          }
-        };
-
-        // Quick Preset handler
-        const applyPreset = (days: number, label: string) => {
-          const baseDate = form.short_term_from ? new Date(form.short_term_from) : new Date();
-          baseDate.setHours(0, 0, 0, 0);
-          const startDateStr = baseDate.toISOString().slice(0, 10);
-          const targetDate = new Date(baseDate.getTime() + days * 86_400_000);
-          const targetDateStr = targetDate.toISOString().slice(0, 10);
-          setForm(f => ({
-            ...f,
-            short_term_from: f.short_term_from || startDateStr,
-            short_term_to: targetDateStr,
-          }));
-          toast.success(`Stay duration set to ${label} ✓`);
-        };
-
-        // Date difference & validation
-        let dateError = "";
-        let nights = 0;
-        let weeks = 0;
-        if (form.short_term_from && form.short_term_to) {
-          const diff = Math.round((new Date(form.short_term_to).getTime() - new Date(form.short_term_from).getTime()) / 86_400_000);
-          nights = diff;
-          weeks = Math.round(diff / 7);
-          if (diff < 7) {
-            dateError = "Minimum stay is 1 week (7 days).";
-          } else if (diff > 183) {
-            dateError = "Maximum stay is 6 months (~183 days).";
-          }
-        }
-
-        return (
-          <div
-            className={cn(
-              "rounded-2xl border p-4 sm:p-5 space-y-4 transition-all duration-200",
-              isShortTerm
-                ? "border-[#c4b5fd] bg-[#faf6ff] ring-2 ring-[#7C3AED]/15 shadow-sm"
-                : "border-[#e8d9c0] bg-[#fdfbf7]"
-            )}
-          >
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-3" style={{ borderColor: isShortTerm ? "#e0ceff" : "#e8d9c0" }}>
-              <div className="flex items-center gap-2.5">
-                <span
-                  className={cn(
-                    "inline-flex h-7 w-7 items-center justify-center rounded-xl text-xs font-black shadow-2xs",
-                    isShortTerm ? "bg-[#7C3AED] text-white" : "bg-[#f4ece1] text-[#836737]"
-                  )}
-                >
-                  <Calendar className="h-4 w-4" />
-                </span>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-[#1a1209]">Short-Term Stay & Availability Window</span>
-                    {isShortTerm ? (
-                      <span className="text-[10px] font-black uppercase tracking-wider bg-[#7C3AED] text-white px-2 py-0.5 rounded-full shadow-2xs animate-pulse">
-                        ★ Mandatory
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold uppercase tracking-wider bg-[#f0e4d2] text-[#836737] px-2 py-0.5 rounded-full">
-                        Optional
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-[#836737] mt-0.5">
-                    {isShortTerm
-                      ? "Check-in, check-out, and weekly pricing are mandatory for short-term properties."
-                      : "Optional flexible stay window and weekly pricing if this property also accepts short-term guests."}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[11px] text-[#836737] bg-white border border-[#e8d9c0] px-2.5 py-1 rounded-full font-semibold">
-                  Allowed: 1 week – 6 months
-                </span>
-                {(form.short_term_from || form.short_term_to) && (
-                  <button
-                    type="button"
-                    onClick={() => setForm(f => ({ ...f, short_term_from: "", short_term_to: "" }))}
-                    className="text-[11px] text-destructive hover:underline font-semibold cursor-pointer"
-                  >
-                    Clear dates
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Quick Presets row */}
-            <div className="space-y-1.5">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[#836737]">
-                Quick Duration Presets (1-Click Selection)
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  { label: "1 Week", days: 7 },
-                  { label: "2 Weeks", days: 14 },
-                  { label: "1 Month", days: 30 },
-                  { label: "2 Months", days: 60 },
-                  { label: "3 Months", days: 90 },
-                  { label: "6 Months", days: 180 },
-                ].map(p => (
-                  <button
-                    key={p.days}
-                    type="button"
-                    onClick={() => applyPreset(p.days, p.label)}
-                    className={cn(
-                      "text-xs font-bold px-3 py-1.5 rounded-xl border transition-all cursor-pointer shadow-2xs active:scale-95",
-                      nights === p.days
-                        ? "bg-[#7C3AED] text-white border-[#7C3AED]"
-                        : "bg-white hover:bg-[#f3e8ff] hover:text-[#7C3AED] border-[#e8d9c0] text-[#1a1209]"
-                    )}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Interactive Date Selection Cards */}
-            <div className="grid gap-3 sm:grid-cols-11 items-center">
-              {/* Check-in (From) Card */}
-              <div className="sm:col-span-5 bg-white rounded-2xl border border-[#c4b5fd]/80 p-3.5 space-y-2 shadow-2xs hover:border-[#7C3AED] transition">
-                <div className="flex items-center justify-between">
-                  <Label className="text-[11px] font-extrabold uppercase tracking-wider text-[#7C3AED] flex items-center gap-1">
-                    <Calendar className="h-3.5 w-3.5" />
-                    <span>Check-in Date (From)</span>
-                  </Label>
-                  {isShortTerm && <span className="text-destructive font-black text-xs">*</span>}
-                </div>
-
-                <CustomDatePicker
-                  value={form.short_term_from}
-                  onChange={val => upd("short_term_from", val)}
-                  minDate={todayStr}
-                  placeholder="Select check-in date"
-                  theme="purple"
-                  rangeStart={form.short_term_from}
-                  rangeEnd={form.short_term_to}
-                />
-              </div>
-
-              {/* Arrow separator in middle */}
-              <div className="sm:col-span-1 flex items-center justify-center">
-                <div className="w-8 h-8 rounded-full bg-[#f3e8ff] border border-[#c4b5fd] flex items-center justify-center text-[#7C3AED] shrink-0">
-                  <ArrowRight className="h-4 w-4" />
-                </div>
-              </div>
-
-              {/* Check-out (To) Card */}
-              <div className="sm:col-span-5 bg-white rounded-2xl border border-[#c4b5fd]/80 p-3.5 space-y-2 shadow-2xs hover:border-[#7C3AED] transition">
-                <div className="flex items-center justify-between">
-                  <Label className="text-[11px] font-extrabold uppercase tracking-wider text-[#7C3AED] flex items-center gap-1">
-                    <Calendar className="h-3.5 w-3.5" />
-                    <span>Check-out Date (To)</span>
-                  </Label>
-                  {isShortTerm && <span className="text-destructive font-black text-xs">*</span>}
-                </div>
-
-                <CustomDatePicker
-                  value={form.short_term_to}
-                  onChange={val => upd("short_term_to", val)}
-                  minDate={minTo}
-                  maxDate={maxTo || undefined}
-                  disabled={!form.short_term_from}
-                  placeholder={form.short_term_from ? "Select check-out date (1 wk – 6 mos)" : "Select check-in date first"}
-                  theme="purple"
-                  rangeStart={form.short_term_from}
-                  rangeEnd={form.short_term_to}
-                />
-              </div>
-            </div>
-
-            {/* Validation & Duration Status Bar */}
-            {dateError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 p-2.5 flex items-center gap-2 text-destructive text-xs font-bold animate-in fade-in">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{dateError}</span>
-              </div>
-            )}
-
-            {form.short_term_from && form.short_term_to && !dateError && (
-              <div className="rounded-xl border border-[#c4b5fd] bg-white p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs animate-in fade-in">
-                <div className="flex items-center gap-2">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#16a34a] text-white text-[11px] font-black">
-                    ✓
-                  </span>
-                  <span className="text-xs font-extrabold text-[#1a1209]">
-                    Valid Short-Term Stay Duration:{" "}
-                    <span className="text-[#7C3AED] font-black">
-                      {nights} Night{nights !== 1 ? "s" : ""} ({weeks} Week{weeks !== 1 ? "s" : ""})
-                    </span>
-                  </span>
-                </div>
-                <span className="text-[11px] font-bold text-[#836737] bg-[#faf6ee] px-2.5 py-0.5 rounded-full border border-[#f0e4d2]">
-                  {formatHumanDate(form.short_term_from)} → {formatHumanDate(form.short_term_to)}
-                </span>
-              </div>
-            )}
-
-            {/* Separate Short-Term Weekly Price Card */}
-            <div className="pt-2 border-t" style={{ borderColor: isShortTerm ? "#e0ceff" : "#e8d9c0" }}>
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-bold text-[#1a1209] flex items-center gap-1.5">
-                    <span className="text-[#7C3AED] font-black">₹</span>
-                    <span>Short-Term Price per Week (₹)</span>
-                    {isShortTerm ? (
-                      <span className="text-destructive font-black text-xs">* (Mandatory)</span>
-                    ) : (
-                      <span className="text-[11px] text-[#836737] font-semibold">(Optional)</span>
-                    )}
-                  </Label>
-                  {form.short_term_price && Number(form.short_term_price) > 0 && (
-                    <div className="text-[11px] font-bold text-[#7C3AED] flex items-center gap-2">
-                      <span>≈ ₹{Math.round(Number(form.short_term_price) / 7).toLocaleString("en-IN")}/day</span>
-                      <span>·</span>
-                      <span>≈ ₹{Math.round(Number(form.short_term_price) * 4.3).toLocaleString("en-IN")}/mo</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-white border border-[#c4b5fd] focus-within:border-[#7C3AED] focus-within:ring-2 focus-within:ring-[#7C3AED]/20 rounded-2xl px-4 py-2.5 flex items-center gap-2.5 transition shadow-2xs">
-                  <span className="font-black text-base text-[#7C3AED]">₹</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={form.short_term_price}
-                    onChange={e => upd("short_term_price", e.target.value)}
-                    placeholder="Enter short-term weekly price (e.g. 8500)"
-                    className="bg-transparent text-sm sm:text-base font-black text-[#1a1209] w-full outline-none placeholder:text-[#a08858] placeholder:font-normal"
-                  />
-                  <span className="text-xs font-bold text-[#836737] whitespace-nowrap bg-[#faf6ff] px-2.5 py-1 rounded-lg border border-[#e0ceff]">
-                    per week
-                  </span>
-                </div>
-                <p className="text-[10px] text-[#836737]">
-                  Weekly rate is maintained completely separate from standard monthly rent or total sale pricing.
-                </p>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
 
       {/* Divider */}
       <div className="border-t border-[#e8d9c0]/60 pt-4" />
@@ -2222,21 +1785,11 @@ function NewProperty() {
           value={form.map_url}
           lat={form.latitude}
           lng={form.longitude}
-          cityHint={form.city}
           onLocationSelected={(details) => {
             // Match city to our supported cities list (case-insensitive)
             const matchedCity = cities.find(
               c => c.toLowerCase() === (details.city || "").toLowerCase()
             ) || form.city;
-
-            // Safety net: even with search biased toward form.city, warn (don't
-            // block) if the picked result is nowhere near it — e.g. a same-named
-            // place in another state.
-            if (form.city && !isCoordsPlausibleForCity(details.lat, details.lng, form.city)) {
-              toast.warning(
-                `That result looks far from ${form.city}. Please double-check the pin before continuing.`
-              );
-            }
 
             setForm(f => ({
               ...f,
@@ -2263,20 +1816,19 @@ function NewProperty() {
           }}
         />
 
-        {/* Interactive map with draggable red pin — shown after location is selected.
-            Owner can drag the pin to fine-tune the exact position before publishing. */}
-        {form.latitude && form.longitude && !isNaN(parseFloat(form.latitude)) && !isNaN(parseFloat(form.longitude)) && (
-          <DraggableLeafletMap
-            lat={parseFloat(form.latitude)}
-            lng={parseFloat(form.longitude)}
-            onPinMoved={(newLat, newLng) => {
-              setForm(f => ({
-                ...f,
-                latitude:  newLat.toFixed(7),
-                longitude: newLng.toFixed(7),
-              }));
-            }}
-          />
+        {/* Mini map preview — shown after a location is selected */}
+        {form.latitude && form.longitude && (
+          <div className="mt-2 rounded-xl overflow-hidden border border-[#e8d9c0] shadow-sm" style={{ height: 180 }}>
+            <iframe
+              title="Location preview"
+              width="100%"
+              height="180"
+              style={{ border: 0, display: "block" }}
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyCpYRtyqbCoy7Kc18XoYBPJZkBpjGIRIjc&q=${form.latitude},${form.longitude}&zoom=16&maptype=roadmap`}
+            />
+          </div>
         )}
 
         {/* Location details summary card — shown after selection */}
@@ -2301,6 +1853,12 @@ function NewProperty() {
               )}
               {form.longitude && (
                 <div><span className="text-[#a08858] font-semibold">Lng: </span><span className="text-[#1a1209] font-bold">{Number(form.longitude).toFixed(6)}</span></div>
+              )}
+              {form.google_place_id && (
+                <div className="col-span-2 sm:col-span-3 truncate">
+                  <span className="text-[#a08858] font-semibold">Place ID: </span>
+                  <span className="text-[#1a1209] font-mono text-[10px]">{form.google_place_id}</span>
+                </div>
               )}
             </div>
           </div>
@@ -3039,42 +2597,25 @@ function NewProperty() {
               <div className="flex items-baseline justify-between gap-2">
                 <div className="flex items-baseline gap-1.5 min-w-0">
                   <span className="text-3xl sm:text-4xl font-black text-[#1a1209] tracking-tight leading-none" style={{ fontFamily: 'var(--font-display)' }}>
-                    ₹{form.listing_type === "short_term"
-                      ? (form.short_term_price ? Number(form.short_term_price).toLocaleString("en-IN") : "—")
-                      : (form.price ? Number(form.price).toLocaleString("en-IN") : "—")}
+                    ₹{form.price ? Number(form.price).toLocaleString("en-IN") : "—"}
                   </span>
                   <span className="text-xs font-semibold text-[#836737] whitespace-nowrap">
-                    {form.listing_type === "sale" ? "/total" : form.listing_type === "short_term" ? "/week" : "/month"}
+                    {form.listing_type === "sale" ? "/total" : "/month"}
                   </span>
                 </div>
                 <span className="text-[11px] font-extrabold uppercase tracking-widest text-[#C9921A] bg-[#fef8eb] border border-[#f4deb4] px-3 py-1 rounded-full shrink-0">
-                  {form.listing_type === "short_term" ? "SHORT-TERM" : form.listing_type.toUpperCase()}
+                  {form.listing_type.toUpperCase()}
                 </span>
               </div>
-              {form.listing_type === "short_term" && form.short_term_from && form.short_term_to && (
-                <p className="text-xs text-[#7C3AED] font-semibold mt-2">
-                  📅 {form.short_term_from} → {form.short_term_to}
-                </p>
-              )}
             </div>
 
             {/* Editable Price Fields */}
             <div className="space-y-3">
-              {form.listing_type === "short_term" ? (
-                <div className="rounded-xl border border-[#e0ceff] bg-[#faf6ff] p-4 space-y-2">
-                  <p className="text-xs font-bold text-[#5b21b6]">Short-Term pricing is set in Step 1 (Configuration).</p>
-                  <p className="text-[11px] text-[#836737]">
-                    Weekly price: <strong className="text-[#1a1209]">₹{form.short_term_price ? Number(form.short_term_price).toLocaleString("en-IN") : "—"}</strong>
-                    {" · "}
-                    Window: <strong className="text-[#1a1209]">{form.short_term_from || "—"} → {form.short_term_to || "—"}</strong>
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-[#1a1209] flex items-center justify-between">
-                    <span>{form.listing_type === "sale" ? "Sale Price (₹)" : "Monthly Rent (₹)"}</span>
-                    <span className="text-destructive">*</span>
-                  </label>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-[#1a1209] flex items-center justify-between">
+                  <span>{form.listing_type === "sale" ? "Sale Price (₹)" : "Monthly Rent (₹)"}</span>
+                  <span className="text-destructive">*</span>
+                </label>
                 <div className="bg-[#fdfbf7] border border-[#e8d9c0] focus-within:border-[#C9921A] focus-within:ring-2 focus-within:ring-[#C9921A]/15 rounded-2xl px-4 py-3 flex items-center gap-2.5 transition">
                   <span className="font-bold text-base text-[#836737]">₹</span>
                   <input
@@ -3087,9 +2628,8 @@ function NewProperty() {
                   />
                 </div>
               </div>
-              )}
 
-              {form.listing_type !== "sale" && form.listing_type !== "short_term" && (
+              {form.listing_type !== "sale" && (
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-[#1a1209] flex items-center justify-between">
                     <span>Security Deposit (₹)</span>
@@ -3131,7 +2671,7 @@ function NewProperty() {
                 onClick={submit}
                 variant="hero"
                 size="lg"
-                disabled={loading}
+                disabled={loading || images.length < MIN_IMAGES}
                 className="w-full py-4 text-base font-black shadow-lg shadow-[#C9921A]/20 hover:shadow-xl hover:scale-[1.01] transition-all rounded-2xl cursor-pointer bg-gradient-to-r from-[#C9921A] via-[#dcb059] to-[#b38014] text-white"
               >
                 {loading ? (
@@ -3569,7 +3109,7 @@ function NewProperty() {
                 Next <ChevronRight className="h-4 w-4 ml-1.5" />
               </Button>
             ) : (
-              <Button type="button" onClick={submit} variant="hero" size="lg" disabled={loading}
+              <Button type="button" onClick={submit} variant="hero" size="lg" disabled={loading || images.length < MIN_IMAGES}
                 className="px-10 py-3 font-black shadow-lg shadow-[#C9921A]/20 cursor-pointer rounded-2xl bg-gradient-to-r from-[#C9921A] to-[#b38014] text-white w-full sm:w-auto">
                 {loading && <Loader2 className="h-5 w-5 animate-spin mr-2" />}
                 {loading ? "Publishing…" : "🚀 Review & Publish Now"}

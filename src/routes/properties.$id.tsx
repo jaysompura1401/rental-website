@@ -351,23 +351,20 @@ function DetailLeafletMap({
       });
 
       L.tileLayer(
-        "https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         {
-          subdomains: "0123",
-          maxZoom: 20,
-          attribution: '© <a href="https://maps.google.com">Google Maps</a>',
+          subdomains: "abc",
+          maxZoom: 19,
+          attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
         }
       ).addTo(map);
 
       // Red property pin with title tag
-      // Use iconSize/iconAnchor that match the actual rendered HTML:
-      // The pin SVG is 36×44px, anchored at bottom-center; the label badge
-      // sits above it (~20px). Total height ≈ 64px, width ≈ 180px.
       const redIcon = L.divIcon({
         html: buildRedPropertyPin(propertyTitle),
         className: "property-custom-pin",
-        iconSize:   [36, 64],
-        iconAnchor: [18, 64],
+        iconSize: [180, 72],
+        iconAnchor: [90, 70],
       });
 
       const propMarker = L.marker([lat, lng], { icon: redIcon, zIndexOffset: 1000 }).addTo(map);
@@ -427,8 +424,8 @@ function DetailLeafletMap({
         const poiIcon = L.divIcon({
           html: buildPoiPin(catCategory, poi.name),
           className: "poi-custom-pin",
-          iconSize:   [34, 62],
-          iconAnchor: [17, 62],
+          iconSize: [150, 64],
+          iconAnchor: [75, 62],
         });
 
         const marker = L.marker([poi.lat, poi.lng], { icon: poiIcon, zIndexOffset: 500 });
@@ -474,14 +471,9 @@ function DetailLeafletMap({
   }, [ready, focusedPOI]);
 
   return (
-    <div style={{
-      position: "relative", width: "100%", height: "100%",
-      overflow: "hidden",
-      contain: "layout paint",
-      borderRadius: "inherit",
-    }}>
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {/* Map container */}
-      <div ref={containerRef} style={{ width: "100%", height: "100%", overflow: "hidden" }} />
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
 
       {/* Loading overlay */}
       {!ready && (
@@ -666,16 +658,13 @@ function MapSection({
 
   return (
     <div
-      className="rounded-2xl w-full shadow-sm"
+      className="rounded-2xl overflow-hidden w-full shadow-sm"
       style={{
         height: "clamp(280px, 45vw, 420px)",
         border: "1px solid #e8d9c0",
         position: "relative",
         background: "#f5ede0",
         minWidth: 0,
-        overflow: "hidden",
-        contain: "layout paint",
-        isolation: "isolate",
       }}
     >
       {/* Loading */}
@@ -739,7 +728,6 @@ function PhotoGallery({ images, title, hasTour, onView360 }: {
 }) {
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
-  const touchStartX = useRef<number | null>(null);
 
   const imgs = (() => {
     const arr = [...images];
@@ -923,17 +911,8 @@ function PhotoGallery({ images, title, hasTour, onView360 }: {
             background: "rgba(0,0,0,0.92)",
             display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center",
-            touchAction: "pan-y",
           }}
           onClick={closeLightbox}
-          onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
-          onTouchEnd={e => {
-            if (touchStartX.current === null) return;
-            const diff = touchStartX.current - e.changedTouches[0].clientX;
-            if (diff > 45) nextImg();
-            else if (diff < -45) prevImg();
-            touchStartX.current = null;
-          }}
         >
           {/* Close */}
           <button
@@ -1029,7 +1008,7 @@ function PhotoGallery({ images, title, hasTour, onView360 }: {
   );
 }
 
-// ─── Nearby places — powered by Google Places API (New) via /api/nearby ─────
+// ─── Nearby places — powered by Nominatim (OpenStreetMap) ────────────────────
 
 import { API_BASE } from "@/lib/api";
 
@@ -1053,11 +1032,48 @@ function kmToWalkMins(km: number): string {
   return `${mins} min`;
 }
 
+const MAX_PER_CAT = 5;
+
+// Categories: each maps to one or more Nominatim amenity= values
+const NEARBY_CATEGORIES: Array<{
+  label: string;
+  icon: string;
+  amenityValues: string[];
+}> = [
+  { label: "School / College",   icon: "🏫", amenityValues: ["school", "college", "university", "kindergarten"] },
+  { label: "Hospital / Clinic",  icon: "🏥", amenityValues: ["hospital", "clinic", "doctors", "pharmacy", "dentist"] },
+  { label: "Police Station",     icon: "🚓", amenityValues: ["police"] },
+  { label: "Metro / Bus Stop",   icon: "🚌", amenityValues: ["bus_station", "bus_stop"] },
+  { label: "Supermarket",        icon: "🛒", amenityValues: ["supermarket", "marketplace"] },
+  { label: "Restaurant / Food",  icon: "🍽️", amenityValues: ["restaurant", "fast_food", "cafe", "food_court"] },
+  { label: "ATM / Bank",         icon: "🏦", amenityValues: ["atm", "bank"] },
+];
+
+// Raw shape of a Nominatim search result
+interface NominatimResult {
+  place_id: number;
+  osm_type:    string;
+  osm_id:      number;
+  lat:         string;
+  lon:         string;
+  name?:       string;
+  display_name: string;
+  type:        string;
+  class:       string;
+  extratags?: {
+    phone?: string;
+    "contact:phone"?: string;
+    website?: string;
+    "contact:website"?: string;
+    opening_hours?: string;
+  };
+}
+
 // ── In-memory + sessionStorage cache ─────────────────────────────────────────
 const _nearbyMemCache = new Map<string, NearbyGroup[]>();
 
 function cacheKey(lat: number, lng: number): string {
-  return `nearby_v3:${lat.toFixed(4)},${lng.toFixed(4)}`;
+  return `nearby_v2:${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
 
 function readCache(key: string): NearbyGroup[] | null {
@@ -1078,11 +1094,88 @@ function writeCache(key: string, data: NearbyGroup[]) {
   try { sessionStorage.setItem(key, JSON.stringify(data)); } catch { /* quota full */ }
 }
 
-/**
- * Fetch nearby POIs from /api/nearby which uses Google Places API (New) server-side.
- * The API key never reaches the browser.
- * Response: { groups: [{label, icon, items: [{name, distKm, lat, lng, address, rating, open_now}]}] }
- */
+// Fetch one amenity category via the backend proxy (which calls Nominatim server-side)
+async function fetchAmenityCategory(
+  amenityValue: string,
+  lat: number,
+  lng: number,
+  radius: number,
+  signal: AbortSignal,
+): Promise<NominatimResult[]> {
+  const params = new URLSearchParams({
+    amenity: amenityValue,
+    lat:     lat.toString(),
+    lon:     lng.toString(),
+    radius:  radius.toString(),
+    limit:   "10",
+  });
+
+  // Try backend proxy first (server-side call, no CORS/rate-limit issues)
+  try {
+    const res = await fetch(`${API_BASE}/maps/nominatim-search?${params.toString()}`, { signal });
+    if (res.ok) {
+      const json = await res.json();
+      if (Array.isArray(json)) return json as NominatimResult[];
+    }
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    // fall through to direct
+  }
+
+  // Direct Nominatim fallback (works from browser — Nominatim has open CORS)
+  const deg = radius / 111000;
+  const viewbox = `${lng - deg},${lat + deg},${lng + deg},${lat - deg}`;
+  const directParams = new URLSearchParams({
+    amenity:        amenityValue,
+    format:         "json",
+    limit:          "10",
+    viewbox,
+    bounded:        "1",
+    addressdetails: "0",
+    extratags:      "1",
+  });
+  const directRes = await fetch(
+    `https://nominatim.openstreetmap.org/search?${directParams.toString()}`,
+    {
+      signal,
+      headers: { "Accept": "application/json" },
+    },
+  );
+  if (!directRes.ok) throw new Error(`Nominatim HTTP ${directRes.status}`);
+  const json = await directRes.json();
+  if (Array.isArray(json)) return json as NominatimResult[];
+  return [];
+}
+
+// Convert a Nominatim result to NearbyItem
+function toNearbyItem(
+  r: NominatimResult,
+  lat: number,
+  lng: number,
+  catIcon: string,
+  catLabel: string,
+): NearbyItem {
+  const rLat = parseFloat(r.lat);
+  const rLng = parseFloat(r.lon);
+  const name = r.name && r.name.trim()
+    ? r.name.trim()
+    // display_name is "Place Name, Street, City, ..." — take first segment
+    : r.display_name.split(",")[0].trim() || catLabel;
+
+  return {
+    name,
+    distKm:        haversineKm(lat, lng, rLat, rLng),
+    lat:           rLat,
+    lng:           rLng,
+    phone:         r.extratags?.phone || r.extratags?.["contact:phone"],
+    website:       r.extratags?.website || r.extratags?.["contact:website"],
+    opening_hours: r.extratags?.opening_hours,
+    address:       r.display_name.split(",").slice(1, 3).join(",").trim() || undefined,
+    categoryIcon:  catIcon,
+    categoryLabel: catLabel,
+  };
+}
+
 async function fetchNearbyPOIs(
   lat: number,
   lng: number,
@@ -1092,62 +1185,51 @@ async function fetchNearbyPOIs(
   const cached = readCache(key);
   if (cached) return cached;
 
-  const params = new URLSearchParams({
-    lat:    lat.toString(),
-    lng:    lng.toString(),
-    radius: radius.toString(),
-  });
-
+  // One AbortController for the whole batch — 25 s total budget
   const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), 20_000);
+  const tid = setTimeout(() => controller.abort(), 25000);
 
   try {
-    const res = await fetch(`${API_BASE}/nearby?${params.toString()}`, {
-      signal: controller.signal,
-    });
+    // Fetch all categories concurrently; a failed category returns an empty array
+    const groups = await Promise.all(
+      NEARBY_CATEGORIES.map(async (cat) => {
+        // Some categories have multiple amenity values — fetch all in parallel
+        const perValue = await Promise.all(
+          cat.amenityValues.map(amenity =>
+            fetchAmenityCategory(amenity, lat, lng, radius, controller.signal)
+              .catch(() => [] as NominatimResult[]),
+          ),
+        );
+
+        // Flatten, deduplicate by osm_id, convert to NearbyItem, sort by distance
+        const seen  = new Set<number>();
+        const items: NearbyItem[] = [];
+
+        for (const results of perValue) {
+          for (const r of results) {
+            if (seen.has(r.osm_id)) continue;
+            seen.add(r.osm_id);
+            const item = toNearbyItem(r, lat, lng, cat.icon, cat.label);
+            // Only include results actually within the radius
+            if (item.distKm <= radius / 1000) items.push(item);
+          }
+        }
+
+        // Also deduplicate by name (same place in multiple value sets)
+        const namesSeen = new Set<string>();
+        const deduped = items.filter(i => {
+          if (namesSeen.has(i.name)) return false;
+          namesSeen.add(i.name);
+          return true;
+        });
+
+        deduped.sort((a, b) => a.distKm - b.distKm);
+
+        return { label: cat.label, icon: cat.icon, items: deduped.slice(0, MAX_PER_CAT) };
+      }),
+    );
+
     clearTimeout(tid);
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { error?: string };
-      throw new Error(body.error || `Nearby search failed (HTTP ${res.status})`);
-    }
-
-    const data = await res.json() as {
-      groups: Array<{
-        label: string;
-        icon: string;
-        items: Array<{
-          name: string;
-          distKm: number;
-          lat: number;
-          lng: number;
-          address?: string | null;
-          rating?: number | null;
-          open_now?: boolean | null;
-          place_id?: string;
-        }>;
-      }>;
-    };
-
-    // Normalise to NearbyGroup[] — add missing fields the UI expects
-    const groups: NearbyGroup[] = (data.groups || []).map(g => ({
-      label: g.label,
-      icon:  g.icon,
-      items: (g.items || []).map(item => ({
-        name:          item.name,
-        distKm:        item.distKm,
-        lat:           item.lat,
-        lng:           item.lng,
-        address:       item.address || undefined,
-        categoryIcon:  g.icon,
-        categoryLabel: g.label,
-        // Google Places provides rating/open_now — map to NearbyItem fields
-        opening_hours: item.open_now != null
-          ? (item.open_now ? "Open now" : "Closed now")
-          : undefined,
-      })),
-    }));
-
     writeCache(key, groups);
     return groups;
   } catch (err) {
@@ -1509,10 +1591,10 @@ function NearbyPlaces({
               </p>
               <p className="text-[10px] mt-0.5 leading-relaxed" style={{ color: "#a08858" }}>
                 {errorMsg.includes("HTTP 429") || errorMsg.includes("429")
-                  ? "The nearby places service is busy right now. Please wait a moment and try again."
+                  ? "Overpass API is rate-limited right now. Please wait a moment and try again."
                   : errorMsg.includes("timeout") || errorMsg.includes("abort") || errorMsg.includes("Timeout")
-                  ? "The request timed out. Please check your connection and try again."
-                  : "Could not load nearby places. Please check your connection or try again."}
+                  ? "The request timed out. The API may be busy — try retrying."
+                  : "All Overpass mirrors failed. Check your internet connection or try again."}
               </p>
             </div>
           </div>
@@ -1981,7 +2063,7 @@ function PropertyDetail() {
 
   const sendInquiry = useCallback(async () => {
     if (!profile || !property) { navigate({ to: "/auth" }); return; }
-    if (!inquiryMsg.trim()) { toast.error("(Message) this field is req."); return; }
+    if (!inquiryMsg.trim()) { toast.error("Enter a message"); return; }
     setSending(true);
     try {
       await inquiriesApi.send({ property_id: property.id, message: inquiryMsg });
@@ -1993,7 +2075,7 @@ function PropertyDetail() {
 
   const submitReview = useCallback(async () => {
     if (!profile || !property) { navigate({ to: "/auth" }); return; }
-    if (!reviewRating) { toast.error("(Star Rating) this field is req."); return; }
+    if (!reviewRating) { toast.error("Please select a star rating"); return; }
     setSubmittingReview(true);
     try {
       const review = await complaintsApi.submitReview(property.id, reviewRating, reviewComment || undefined);
@@ -2006,7 +2088,7 @@ function PropertyDetail() {
 
   const sendDirectMessage = useCallback(async () => {
     if (!profile || !property) { navigate({ to: "/auth" }); return; }
-    if (!messageText.trim()) { toast.error("(Message) this field is req."); return; }
+    if (!messageText.trim()) { toast.error("Enter a message"); return; }
     setSendingMessage(true);
     try {
       await messagesApi.send({ receiver_id: property.owner_id, content: messageText.trim(), property_id: property.id });
@@ -2018,8 +2100,8 @@ function PropertyDetail() {
 
   const bookVisit = useCallback(async () => {
     if (!profile || !property) { navigate({ to: "/auth" }); return; }
-    if (!visitDate) { toast.error("(Visit Date) this field is req."); return; }
-    if (!visitTime) { toast.error("(Time Slot) this field is req."); return; }
+    if (!visitDate) { toast.error("Please select a date"); return; }
+    if (!visitTime) { toast.error("Please select a time slot"); return; }
     setBookingVisit(true);
     try {
       await visitsApi.book({
@@ -2096,7 +2178,7 @@ function PropertyDetail() {
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 pb-24 lg:pb-16">
+      <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10 pb-16">
 
         {/* ── Title (above gallery on mobile, standard desktop) ─── */}
         <div className="mb-4">
@@ -2121,14 +2203,6 @@ function PropertyDetail() {
                 <span className="font-normal" style={{ color: "#a08858" }}>
                   ({property.review_count} review{property.review_count !== 1 ? "s" : ""})
                 </span>
-              </span>
-            )}
-            {property.listing_type === "short_term" && (
-              <span
-                className="inline-flex items-center gap-1 font-bold rounded-full px-3 py-0.5 text-xs text-white shadow-xs"
-                style={{ backgroundColor: "#7C3AED" }}
-              >
-                ⏱️ Short-Term Property
               </span>
             )}
             {Boolean(property.verified) ? (
@@ -2513,18 +2587,13 @@ function PropertyDetail() {
               <h2 className="text-lg font-bold mb-4" style={{ color: "#1a1209" }}>Property Details</h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {[
-                  ["Property type",    property.property_type],
-                  ["Listing type",     property.listing_type === "short_term" ? "Short-Term" : property.listing_type?.toUpperCase()],
-                  ...(property.listing_type === "short_term" ? [
-                    ["Availability from", property.short_term_from || null],
-                    ["Availability to",   property.short_term_to   || null],
-                    ["Price / week",      property.short_term_price ? `₹${Number(property.short_term_price).toLocaleString("en-IN")}` : null],
-                  ] : []),
+                  ["Property type",  property.property_type],
+                  ["Listing type",   property.listing_type?.toUpperCase()],
                   ["Carpet area",    property.carpet_area ? `${property.carpet_area} sq.ft` : null],
                   ["Floor",          property.floor_number && property.total_floors ? `${property.floor_number} of ${property.total_floors}` : null],
                   ["Facing",         property.facing],
                   ["Furnishing",     property.furnished],
-                  ["Available from", property.listing_type !== "short_term" ? property.available_from : null],
+                  ["Available from", property.available_from],
                   ["Property age",   property.age_years],
                   ["RERA ID",        property.rera_id],
                   ["Parking",        property.parking_slots ? `${property.parking_slots} slot${property.parking_slots > 1 ? "s" : ""}` : null],
@@ -2630,39 +2699,22 @@ function PropertyDetail() {
           <div className="space-y-4 lg:sticky lg:top-20 lg:self-start">
 
             {/* Price card */}
-            <div id="booking-card" className="rounded-2xl p-5 shadow-md scroll-mt-20" style={{ border: "1px solid #e8d9c0", backgroundColor: "#fff" }}>
+            <div className="rounded-2xl p-5 shadow-md" style={{ border: "1px solid #e8d9c0", backgroundColor: "#fff" }}>
               {/* Price */}
-              {property.listing_type === "short_term" ? (
-                <div className="mb-2">
-                  <div className="flex items-baseline gap-1.5 mb-1">
-                    <span className="text-3xl font-extrabold" style={{ color: "#7C3AED" }}>
-                      {property.short_term_price ? formatINR(property.short_term_price) : formatINR(property.price)}
-                    </span>
-                    <span className="text-base font-medium" style={{ color: "#836737" }}>/week</span>
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full ml-1" style={{ background: "#ede9fe", color: "#7C3AED" }}>Short-Term</span>
-                  </div>
-                  {property.short_term_from && property.short_term_to && (
-                    <p className="text-xs font-semibold" style={{ color: "#7C3AED" }}>
-                      📅 {property.short_term_from} → {property.short_term_to}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-baseline gap-1.5 mb-1">
-                  <span className="text-3xl font-extrabold" style={{ color: "#1a1209" }}>
-                    {formatINR(property.price)}
-                  </span>
-                  {property.listing_type !== "sale" && (
-                    <span className="text-base font-medium" style={{ color: "#836737" }}>/month</span>
-                  )}
-                </div>
-              )}
-              {property.listing_type !== "short_term" && property.deposit != null && (
+              <div className="flex items-baseline gap-1.5 mb-1">
+                <span className="text-3xl font-extrabold" style={{ color: "#1a1209" }}>
+                  {formatINR(property.price)}
+                </span>
+                {property.listing_type !== "sale" && (
+                  <span className="text-base font-medium" style={{ color: "#836737" }}>/month</span>
+                )}
+              </div>
+              {property.deposit != null && (
                 <p className="text-xs mb-1" style={{ color: "#a08858" }}>
                   Deposit: {formatINR(property.deposit)}
                 </p>
               )}
-              {property.maintenance_fee > 0 && property.listing_type !== "short_term" && (
+              {property.maintenance_fee > 0 && (
                 <p className="text-xs mb-3" style={{ color: "#a08858" }}>
                   + ₹{property.maintenance_fee.toLocaleString("en-IN")}/mo maintenance
                 </p>
@@ -2909,53 +2961,6 @@ function PropertyDetail() {
           </div>
 
         </div>{/* end 2-col grid */}
-      </div>
-
-      {/* ── Mobile Sticky Bottom Action Bar ────────────────────────── */}
-      <div
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 px-4 py-2.5 flex items-center justify-between border-t shadow-[0_-4px_20px_rgba(0,0,0,0.08)]"
-        style={{ backgroundColor: "#FAF6EE", borderColor: "#e8d9c0" }}
-      >
-        <div className="min-w-0 pr-2">
-          <div className="flex items-baseline gap-1">
-            <span className="text-lg sm:text-xl font-extrabold" style={{ color: property.listing_type === "short_term" ? "#7C3AED" : "#1a1209" }}>
-              {property.listing_type === "short_term" && property.short_term_price ? formatINR(property.short_term_price) : formatINR(property.price)}
-            </span>
-            <span className="text-xs font-medium" style={{ color: "#836737" }}>
-              {property.listing_type === "short_term" ? "/wk" : property.listing_type !== "sale" ? "/mo" : ""}
-            </span>
-          </div>
-          <p className="text-[11px] font-semibold truncate" style={{ color: "#a08858" }}>
-            {property.bedrooms ? `${property.bedrooms} BHK ` : ""}{property.property_type}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {property.owner_phone && (
-            <a
-              href={`tel:${property.owner_phone}`}
-              className="flex items-center justify-center h-10 w-10 rounded-full border transition hover:bg-[#fef3d4]"
-              style={{ borderColor: "#e8d9c0", color: GOLD, backgroundColor: "#fff" }}
-              aria-label="Call owner"
-            >
-              <Phone className="h-4 w-4" />
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              const el = document.getElementById("booking-card");
-              if (el) {
-                el.scrollIntoView({ behavior: "smooth" });
-              }
-            }}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-full text-xs font-bold text-white shadow-md transition-all active:scale-95 cursor-pointer"
-            style={{ backgroundColor: GOLD }}
-          >
-            <Calendar className="h-3.5 w-3.5" />
-            <span>Book Visit</span>
-          </button>
-        </div>
       </div>
 
       <Footer />

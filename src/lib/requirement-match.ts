@@ -133,7 +133,7 @@ export function scoreProperty(
     possible += WEIGHTS.listing_type;
     if (normalise(prop.listing_type) === normalise(req.listing_type)) {
       earned += WEIGHTS.listing_type;
-      hits.push(req.listing_type === "sale" ? "For sale" : req.listing_type === "pg" ? "PG accommodation" : req.listing_type === "short_term" ? "Short-Term Stay" : "Available for rent");
+      hits.push(req.listing_type === "sale" ? "For sale" : req.listing_type === "pg" ? "PG accommodation" : "Available for rent");
     } else {
       misses.push(`Listed as ${prop.listing_type}, you want ${req.listing_type}`);
     }
@@ -167,7 +167,7 @@ export function scoreProperty(
   const [budMin, budMax] = req.budget;
   if (budMax > 0) {
     possible += WEIGHTS.budget;
-    const price = prop.listing_type === "short_term" && prop.short_term_price ? prop.short_term_price : prop.price;
+    const price = prop.price;
 
     if (price <= budMax && (budMin === 0 || price >= budMin)) {
       // Perfectly within range

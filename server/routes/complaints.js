@@ -127,11 +127,12 @@ router.post("/reviews/:propertyId", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "rating must be 1–5" });
     }
     const id = uuidv4();
+    // PostgreSQL: ON CONFLICT (property_id, reviewer_id) DO UPDATE
     await pool.query(
       `INSERT INTO nivaas_reviews (id, property_id, reviewer_id, rating, comment)
        VALUES (?,?,?,?,?)
-       ON DUPLICATE KEY UPDATE
-         rating = VALUES(rating), comment = VALUES(comment)`,
+       ON CONFLICT (property_id, reviewer_id) DO UPDATE
+         SET rating = EXCLUDED.rating, comment = EXCLUDED.comment`,
       [id, propertyId, req.user.id, rating, comment || null]
     );
 

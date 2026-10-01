@@ -161,18 +161,6 @@
   }
 }
 
-.scrollbar-hide,
-.no-scrollbar {
-  -ms-overflow-style: none !important;
-  scrollbar-width: none !important;
-}
-.scrollbar-hide::-webkit-scrollbar,
-.no-scrollbar::-webkit-scrollbar {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-}
-
 /* Hide native browser calendar/date picker icon on date inputs */
 .date-no-icon::-webkit-calendar-picker-indicator {
   display: none !important;
@@ -201,32 +189,3 @@
   from { opacity: 0; transform: translateY(4px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0)   scale(1);    }
 }
-
-/* ── Leaflet map containment — prevent tiles and DivIcon labels from
-      leaking outside the rounded map container ──────────────────────── */
-.leaflet-container {
-  overflow: hidden !important;
-  contain: layout paint;
-}
-
-/* Custom property pin label — align to bottom of the pin SVG */
-.property-custom-pin {
-  overflow: visible;
-  /* The label badge sits above the pin; make it align naturally */
-}
-.property-custom-pin > div {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-/* POI custom pin — same treatment */
-.poi-custom-pin {
-  overflow: visible;
-}
-.poi-custom-pin > div {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-

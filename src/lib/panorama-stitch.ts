@@ -5,40 +5,45 @@
  * Shared by AI360Generator (owner upload) and the property detail page
  * (auto-generate from existing uploaded images).
  *
- * Input:  array of { url?: string; previewUrl?: string; angle: number }
- * Output: { blob: Blob, dataUrl: string }
+ * Input:  array of { url: string; angle: number } — each item is a photo URL
+ *         and the horizontal angle it represents (0°=front, 90°=right, etc.)
+ *
+ * Output: a JPEG Blob containing a 4096×2048 equirectangular panorama and
+ *         the corresponding base64 data: URL ready for pannellum.
+ *
+ * Algorithm:
+ *   1. Load all images (HTTPS or blob: — no crossOrigin needed, same Canvas).
+ *   2. Sort by ascending angle.
+ *   3. Each image "owns" half the angular gap to its left and right neighbours.
+ *   4. Draw each image into its angular slice on the 4096×2048 canvas using
+ *      drawImage(), handling the 0°/360° seam with a split draw.
+ *   5. Export as JPEG blob and base64 data URL.
  */
 
 export interface PanoramaSlot {
-  url?:        string;
-  previewUrl?: string;
-  angle:       number;   // degrees, 0–359
+  url:   string;
+  angle: number;   // degrees, 0–359
 }
 
 export interface PanoramaResult {
   blob:    Blob;
-  dataUrl: string;  // "data:image/jpeg;base64,…" — safe for pannellum & canvas viewers
+  dataUrl: string;  // "data:image/jpeg;base64,…" — safe for pannellum
 }
 
 // ---------------------------------------------------------------------------
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    if (!url) {
-      return reject(new Error("Empty image URL provided for panorama stitching"));
-    }
-
     const img = new Image();
-    // Only set anonymous crossOrigin for external remote URLs
-    if (/^https?:\/\//i.test(url)) {
-      img.crossOrigin = "anonymous";
-    }
-
-    img.onload = () => resolve(img);
+    // crossOrigin="anonymous" is required for HTTPS Supabase URLs so that
+    // Canvas 2D drawImage() doesn't taint the canvas.
+    // For blob: URLs it is harmless.
+    img.crossOrigin = "anonymous";
+    img.onload  = () => resolve(img);
     img.onerror = () => {
-      // Retry without crossOrigin
+      // Retry without crossOrigin as some CDN configs reject the header
       const img2 = new Image();
-      img2.onload = () => resolve(img2);
+      img2.onload  = () => resolve(img2);
       img2.onerror = () => reject(new Error(`Cannot load image: ${url.slice(0, 80)}`));
       img2.src = url;
     };
@@ -49,18 +54,11 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 // ---------------------------------------------------------------------------
 
 export async function stitchPanorama(slots: PanoramaSlot[]): Promise<PanoramaResult> {
-  if (!slots || slots.length === 0) {
-    throw new Error("No images provided for panorama stitching");
-  }
+  if (slots.length === 0) throw new Error("No images provided");
 
   // 1. Load all images in parallel
   const loaded = await Promise.all(
-    slots.map(async (s) => {
-      const srcUrl = s.url || s.previewUrl;
-      if (!srcUrl) throw new Error("Image URL is missing for one of the wall angles");
-      const img = await loadImage(srcUrl);
-      return { img, angle: s.angle ?? 0 };
-    })
+    slots.map(async s => ({ img: await loadImage(s.url), angle: s.angle }))
   );
 
   // 2. Sort by ascending angle
@@ -78,7 +76,7 @@ export async function stitchPanorama(slots: PanoramaSlot[]): Promise<PanoramaRes
     const startAngle = (entry.angle - gapBefore / 2 + 360) % 360;
     const spanAngle  = gapBefore / 2 + gapAfter / 2;
 
-    return { startAngle, spanAngle: spanAngle <= 0 ? 360 / count : spanAngle };
+    return { startAngle, spanAngle };
   });
 
   // 4. Draw onto 4096×2048 canvas (standard equirectangular 2:1 ratio)
@@ -89,7 +87,7 @@ export async function stitchPanorama(slots: PanoramaSlot[]): Promise<PanoramaRes
   canvas.width  = PAN_W;
   canvas.height = PAN_H;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context is not available in browser");
+  if (!ctx) throw new Error("Canvas 2D not available");
 
   ctx.fillStyle = "#000000";
   ctx.fillRect(0, 0, PAN_W, PAN_H);
@@ -101,22 +99,19 @@ export async function stitchPanorama(slots: PanoramaSlot[]): Promise<PanoramaRes
     const dw = Math.round((spanAngle  / 360) * PAN_W);
     if (dw <= 0) return;
 
-    const nw = img.naturalWidth || img.width || 800;
-    const nh = img.naturalHeight || img.height || 600;
-
     if (dx + dw <= PAN_W) {
       // No seam
-      ctx.drawImage(img, 0, 0, nw, nh, dx, 0, dw, PAN_H);
+      ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, dx, 0, dw, PAN_H);
     } else {
       // Straddles the 0°/360° seam — split into two draws
       const part1W    = PAN_W - dx;
       const part2W    = dw - part1W;
       const frac      = part1W / dw;
-      const srcSplitX = Math.round(nw * frac);
+      const srcSplitX = Math.round(img.naturalWidth * frac);
 
-      ctx.drawImage(img, 0, 0, srcSplitX, nh, dx, 0, part1W, PAN_H);
+      ctx.drawImage(img, 0, 0, srcSplitX, img.naturalHeight, dx, 0, part1W, PAN_H);
       ctx.drawImage(
-        img, srcSplitX, 0, nw - srcSplitX, nh,
+        img, srcSplitX, 0, img.naturalWidth - srcSplitX, img.naturalHeight,
         0, 0, part2W, PAN_H
       );
     }
@@ -125,17 +120,17 @@ export async function stitchPanorama(slots: PanoramaSlot[]): Promise<PanoramaRes
   // 5. Export as JPEG blob
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))),
+      b => b ? resolve(b) : reject(new Error("Canvas toBlob returned null")),
       "image/jpeg",
       0.92
     );
   });
 
-  // 6. Convert to base64 data URL
+  // 6. Convert to base64 data URL (pannellum cannot load blob: URLs)
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload  = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error("FileReader failed to convert panorama blob"));
+    reader.onerror = () => reject(new Error("FileReader failed"));
     reader.readAsDataURL(blob);
   });
 

@@ -26,7 +26,6 @@ const NAV_TABS: NavTab[] = [
   { label: "Rent",           listing_type:  "rent"                   },
   { label: "Commercial",     property_type: "Office Space"           },
   { label: "PG / Co-living", listing_type:  "pg"                     },
-  { label: "Short-Term",     listing_type:  "short_term"             },
   { label: "Map",            mapLink: true                           },
 ];
 
@@ -109,7 +108,7 @@ export function Navbar() {
 
           {/* Center Category Navigation Links — Desktop */}
           <div
-            className="hidden lg:flex items-center p-1 divide-x divide-[#e8d9c0]/80 shadow-2xs"
+            className="hidden md:flex items-center p-1 divide-x divide-[#e8d9c0]/80 shadow-2xs"
             style={{ border: "1px solid #e8d9c0", borderRadius: 999, backgroundColor: "#fff" }}
           >
             {NAV_TABS.map((tab) => {
@@ -205,7 +204,7 @@ export function Navbar() {
             {/* Mobile Hamburger Button */}
             <button
               onClick={() => setMobileOpen(true)}
-              className="lg:hidden flex h-9 w-9 items-center justify-center rounded-full transition-colors hover:bg-[#fef3d4]"
+              className="md:hidden flex h-9 w-9 items-center justify-center rounded-full transition-colors hover:bg-[#fef3d4]"
               style={{ color: "#836737" }}
               aria-label="Open menu"
             >
@@ -218,14 +217,14 @@ export function Navbar() {
       {/* ── Mobile Drawer ─────────────────────────────────────────── */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs lg:hidden transition-opacity duration-300"
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs md:hidden transition-opacity duration-300"
           onClick={() => setMobileOpen(false)}
           aria-hidden="true"
         />
       )}
 
       <div
-        className={`fixed top-0 right-0 z-50 h-full w-80 max-w-[85vw] flex flex-col lg:hidden transition-transform duration-300 ease-out shadow-2xl ${
+        className={`fixed top-0 right-0 z-50 h-full w-80 max-w-[85vw] flex flex-col md:hidden transition-transform duration-300 ease-out shadow-2xl ${
           mobileOpen ? "translate-x-0" : "translate-x-full"
         }`}
         style={{ backgroundColor: BG, borderLeft: "1px solid #e8d9c0" }}
